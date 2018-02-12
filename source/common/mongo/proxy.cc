@@ -10,10 +10,9 @@
 #include "envoy/runtime/runtime.h"
 
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/common/utility.h"
 #include "common/mongo/codec_impl.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Mongo {
@@ -277,14 +276,14 @@ void ProxyFilter::onEvent(Network::ConnectionEvent event) {
   }
 }
 
-Network::FilterStatus ProxyFilter::onData(Buffer::Instance& data) {
+Network::FilterStatus ProxyFilter::onData(Buffer::Instance& data, bool) {
   read_buffer_.add(data);
   doDecode(read_buffer_);
 
   return delay_timer_ ? Network::FilterStatus::StopIteration : Network::FilterStatus::Continue;
 }
 
-Network::FilterStatus ProxyFilter::onWrite(Buffer::Instance& data) {
+Network::FilterStatus ProxyFilter::onWrite(Buffer::Instance& data, bool) {
   write_buffer_.add(data);
   doDecode(write_buffer_);
   return Network::FilterStatus::Continue;

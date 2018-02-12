@@ -12,36 +12,32 @@
 #include "envoy/event/timer.h"
 #include "envoy/network/dns.h"
 #include "envoy/server/transport_socket_config.h"
-#include "envoy/ssl/context.h"
+#include "envoy/ssl/context_manager.h"
 #include "envoy/upstream/health_checker.h"
 
 #include "common/common/enum_to_int.h"
+#include "common/common/fmt.h"
 #include "common/common/utility.h"
 #include "common/config/protocol_json.h"
 #include "common/config/tls_context_json.h"
 #include "common/config/utility.h"
 #include "common/http/utility.h"
 #include "common/network/address_impl.h"
-#include "common/network/raw_buffer_socket.h"
 #include "common/network/resolver_impl.h"
 #include "common/network/utility.h"
 #include "common/protobuf/protobuf.h"
 #include "common/protobuf/utility.h"
-#include "common/ssl/connection_impl.h"
-#include "common/ssl/context_config_impl.h"
 #include "common/upstream/eds.h"
 #include "common/upstream/health_checker_impl.h"
 #include "common/upstream/logical_dns_cluster.h"
 #include "common/upstream/original_dst_cluster.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Upstream {
 namespace {
 
 const Network::Address::InstanceConstSharedPtr
-getSourceAddress(const envoy::api::v2::cluster::Cluster& cluster,
+getSourceAddress(const envoy::api::v2::Cluster& cluster,
                  const Network::Address::InstanceConstSharedPtr source_address) {
   // The source address from cluster config takes precedence.
   if (cluster.upstream_bind_config().has_source_address()) {
@@ -53,28 +49,50 @@ getSourceAddress(const envoy::api::v2::cluster::Cluster& cluster,
 }
 } // namespace
 
-Host::CreateConnectionData HostImpl::createConnection(Event::Dispatcher& dispatcher) const {
-  return {createConnection(dispatcher, *cluster_, address_), shared_from_this()};
+Host::CreateConnectionData
+HostImpl::createConnection(Event::Dispatcher& dispatcher,
+                           const Network::ConnectionSocket::OptionsSharedPtr& options) const {
+  return {createConnection(dispatcher, *cluster_, address_, options), shared_from_this()};
 }
 
 Network::ClientConnectionPtr
 HostImpl::createConnection(Event::Dispatcher& dispatcher, const ClusterInfo& cluster,
-                           Network::Address::InstanceConstSharedPtr address) {
+                           Network::Address::InstanceConstSharedPtr address,
+                           const Network::ConnectionSocket::OptionsSharedPtr& options) {
   Network::ClientConnectionPtr connection = dispatcher.createClientConnection(
-      address, cluster.sourceAddress(), cluster.transportSocketFactory().createTransportSocket());
+      address, cluster.sourceAddress(), cluster.transportSocketFactory().createTransportSocket(),
+      options);
   connection->setBufferLimits(cluster.perConnectionBufferLimitBytes());
   return connection;
 }
 
 void HostImpl::weight(uint32_t new_weight) { weight_ = std::max(1U, std::min(128U, new_weight)); }
 
+HostsPerLocalityConstSharedPtr
+HostsPerLocalityImpl::filter(std::function<bool(const Host&)> predicate) const {
+  auto* filtered_clone = new HostsPerLocalityImpl();
+  HostsPerLocalityConstSharedPtr shared_filtered_clone{filtered_clone};
+
+  filtered_clone->local_ = local_;
+  for (const auto& hosts_locality : hosts_per_locality_) {
+    HostVector current_locality_hosts;
+    for (const auto& host : hosts_locality) {
+      if (predicate(*host)) {
+        current_locality_hosts.emplace_back(host);
+      }
+    }
+    filtered_clone->hosts_per_locality_.push_back(std::move(current_locality_hosts));
+  }
+
+  return shared_filtered_clone;
+}
+
 HostSet& PrioritySetImpl::getOrCreateHostSet(uint32_t priority) {
   if (host_sets_.size() < priority + 1) {
     for (size_t i = host_sets_.size(); i <= priority; ++i) {
       HostSetImplPtr host_set = createHostSet(i);
-      host_set->addMemberUpdateCb([this](uint32_t priority,
-                                         const std::vector<HostSharedPtr>& hosts_added,
-                                         const std::vector<HostSharedPtr>& hosts_removed) {
+      host_set->addMemberUpdateCb([this](uint32_t priority, const HostVector& hosts_added,
+                                         const HostVector& hosts_removed) {
         runUpdateCallbacks(priority, hosts_added, hosts_removed);
       });
       host_sets_.push_back(std::move(host_set));
@@ -91,7 +109,7 @@ ClusterLoadReportStats ClusterInfoImpl::generateLoadReportStats(Stats::Scope& sc
   return {ALL_CLUSTER_LOAD_REPORT_STATS(POOL_COUNTER(scope))};
 }
 
-ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::cluster::Cluster& config,
+ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::Cluster& config,
                                  const Network::Address::InstanceConstSharedPtr source_address,
                                  Runtime::Loader& runtime, Stats::Store& stats,
                                  Ssl::ContextManager& ssl_context_manager, bool added_via_api)
@@ -110,12 +128,14 @@ ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::cluster::Cluster& config,
       resource_managers_(config, runtime, name_),
       maintenance_mode_runtime_key_(fmt::format("upstream.maintenance_mode.{}", name_)),
       source_address_(getSourceAddress(config, source_address)),
-      lb_ring_hash_config_(
-          envoy::api::v2::cluster::Cluster::RingHashLbConfig(config.ring_hash_lb_config())),
+      lb_ring_hash_config_(envoy::api::v2::Cluster::RingHashLbConfig(config.ring_hash_lb_config())),
       ssl_context_manager_(ssl_context_manager), added_via_api_(added_via_api),
       lb_subset_(LoadBalancerSubsetInfoImpl(config.lb_subset_config())),
-      metadata_(config.metadata()) {
+      metadata_(config.metadata()), common_lb_config_(config.common_lb_config()) {
 
+  // If the cluster doesn't have a transport socket configured, override with the default transport
+  // socket implementation based on the tls_context. We copy by value first then override if
+  // necessary.
   auto transport_socket = config.transport_socket();
   if (!config.has_transport_socket()) {
     if (config.has_tls_context()) {
@@ -133,20 +153,20 @@ ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::cluster::Cluster& config,
   transport_socket_factory_ = config_factory.createTransportSocketFactory(*message, *this);
 
   switch (config.lb_policy()) {
-  case envoy::api::v2::cluster::Cluster::ROUND_ROBIN:
+  case envoy::api::v2::Cluster::ROUND_ROBIN:
     lb_type_ = LoadBalancerType::RoundRobin;
     break;
-  case envoy::api::v2::cluster::Cluster::LEAST_REQUEST:
+  case envoy::api::v2::Cluster::LEAST_REQUEST:
     lb_type_ = LoadBalancerType::LeastRequest;
     break;
-  case envoy::api::v2::cluster::Cluster::RANDOM:
+  case envoy::api::v2::Cluster::RANDOM:
     lb_type_ = LoadBalancerType::Random;
     break;
-  case envoy::api::v2::cluster::Cluster::RING_HASH:
+  case envoy::api::v2::Cluster::RING_HASH:
     lb_type_ = LoadBalancerType::RingHash;
     break;
-  case envoy::api::v2::cluster::Cluster::ORIGINAL_DST_LB:
-    if (config.type() != envoy::api::v2::cluster::Cluster::ORIGINAL_DST) {
+  case envoy::api::v2::Cluster::ORIGINAL_DST_LB:
+    if (config.type() != envoy::api::v2::Cluster::ORIGINAL_DST) {
       throw EnvoyException(fmt::format(
           "cluster: LB type 'original_dst_lb' may only be used with cluser type 'original_dst'"));
     }
@@ -156,7 +176,7 @@ ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::cluster::Cluster& config,
     NOT_REACHED;
   }
 
-  if (config.protocol_selection() == envoy::api::v2::cluster::Cluster::USE_CONFIGURED_PROTOCOL) {
+  if (config.protocol_selection() == envoy::api::v2::Cluster::USE_CONFIGURED_PROTOCOL) {
     // Make sure multiple protocol configurations are not present
     if (config.has_http_protocol_options() && config.has_http2_protocol_options()) {
       throw EnvoyException(fmt::format("cluster: Both HTTP1 and HTTP2 options may only be "
@@ -165,17 +185,15 @@ ClusterInfoImpl::ClusterInfoImpl(const envoy::api::v2::cluster::Cluster& config,
   }
 }
 
-const HostListsConstSharedPtr ClusterImplBase::empty_host_lists_{
-    new std::vector<std::vector<HostSharedPtr>>()};
-
-ClusterSharedPtr
-ClusterImplBase::create(const envoy::api::v2::cluster::Cluster& cluster, ClusterManager& cm,
-                        Stats::Store& stats, ThreadLocal::Instance& tls,
-                        Network::DnsResolverSharedPtr dns_resolver,
-                        Ssl::ContextManager& ssl_context_manager, Runtime::Loader& runtime,
-                        Runtime::RandomGenerator& random, Event::Dispatcher& dispatcher,
-                        const LocalInfo::LocalInfo& local_info,
-                        Outlier::EventLoggerSharedPtr outlier_event_logger, bool added_via_api) {
+ClusterSharedPtr ClusterImplBase::create(const envoy::api::v2::Cluster& cluster, ClusterManager& cm,
+                                         Stats::Store& stats, ThreadLocal::Instance& tls,
+                                         Network::DnsResolverSharedPtr dns_resolver,
+                                         Ssl::ContextManager& ssl_context_manager,
+                                         Runtime::Loader& runtime, Runtime::RandomGenerator& random,
+                                         Event::Dispatcher& dispatcher,
+                                         const LocalInfo::LocalInfo& local_info,
+                                         Outlier::EventLoggerSharedPtr outlier_event_logger,
+                                         bool added_via_api) {
   std::unique_ptr<ClusterImplBase> new_cluster;
 
   // We make this a shared pointer to deal with the distinct ownership
@@ -196,22 +214,22 @@ ClusterImplBase::create(const envoy::api::v2::cluster::Cluster& cluster, Cluster
   }
 
   switch (cluster.type()) {
-  case envoy::api::v2::cluster::Cluster::STATIC:
+  case envoy::api::v2::Cluster::STATIC:
     new_cluster.reset(
         new StaticClusterImpl(cluster, runtime, stats, ssl_context_manager, cm, added_via_api));
     break;
-  case envoy::api::v2::cluster::Cluster::STRICT_DNS:
+  case envoy::api::v2::Cluster::STRICT_DNS:
     new_cluster.reset(new StrictDnsClusterImpl(cluster, runtime, stats, ssl_context_manager,
                                                selected_dns_resolver, cm, dispatcher,
                                                added_via_api));
     break;
-  case envoy::api::v2::cluster::Cluster::LOGICAL_DNS:
+  case envoy::api::v2::Cluster::LOGICAL_DNS:
     new_cluster.reset(new LogicalDnsCluster(cluster, runtime, stats, ssl_context_manager,
                                             selected_dns_resolver, tls, cm, dispatcher,
                                             added_via_api));
     break;
-  case envoy::api::v2::cluster::Cluster::ORIGINAL_DST:
-    if (cluster.lb_policy() != envoy::api::v2::cluster::Cluster::ORIGINAL_DST_LB) {
+  case envoy::api::v2::Cluster::ORIGINAL_DST:
+    if (cluster.lb_policy() != envoy::api::v2::Cluster::ORIGINAL_DST_LB) {
       throw EnvoyException(fmt::format(
           "cluster: cluster type 'original_dst' may only be used with LB type 'original_dst_lb'"));
     }
@@ -222,9 +240,9 @@ ClusterImplBase::create(const envoy::api::v2::cluster::Cluster& cluster, Cluster
     new_cluster.reset(new OriginalDstCluster(cluster, runtime, stats, ssl_context_manager, cm,
                                              dispatcher, added_via_api));
     break;
-  case envoy::api::v2::cluster::Cluster::EDS:
+  case envoy::api::v2::Cluster::EDS:
     if (!cluster.has_eds_cluster_config()) {
-      throw EnvoyException("cannot create an sds cluster without an sds config");
+      throw EnvoyException("cannot create an EDS cluster without an EDS config");
     }
 
     // We map SDS to EDS, since EDS provides backwards compatibility with SDS.
@@ -247,7 +265,7 @@ ClusterImplBase::create(const envoy::api::v2::cluster::Cluster& cluster, Cluster
   return std::move(new_cluster);
 }
 
-ClusterImplBase::ClusterImplBase(const envoy::api::v2::cluster::Cluster& cluster,
+ClusterImplBase::ClusterImplBase(const envoy::api::v2::Cluster& cluster,
                                  const Network::Address::InstanceConstSharedPtr source_address,
                                  Runtime::Loader& runtime, Stats::Store& stats,
                                  Ssl::ContextManager& ssl_context_manager, bool added_via_api)
@@ -256,26 +274,25 @@ ClusterImplBase::ClusterImplBase(const envoy::api::v2::cluster::Cluster& cluster
   // Create the default (empty) priority set before registering callbacks to
   // avoid getting an update the first time it is accessed.
   priority_set_.getOrCreateHostSet(0);
-  priority_set_.addMemberUpdateCb([this](uint32_t, const std::vector<HostSharedPtr>& hosts_added,
-                                         const std::vector<HostSharedPtr>& hosts_removed) {
-    if (!hosts_added.empty() || !hosts_removed.empty()) {
-      info_->stats().membership_change_.inc();
-    }
+  priority_set_.addMemberUpdateCb(
+      [this](uint32_t, const HostVector& hosts_added, const HostVector& hosts_removed) {
+        if (!hosts_added.empty() || !hosts_removed.empty()) {
+          info_->stats().membership_change_.inc();
+        }
 
-    uint32_t healthy_hosts = 0;
-    uint32_t hosts = 0;
-    for (const auto& host_set : prioritySet().hostSetsPerPriority()) {
-      hosts += host_set->hosts().size();
-      healthy_hosts += host_set->healthyHosts().size();
-    }
-    info_->stats().membership_total_.set(hosts);
-    info_->stats().membership_healthy_.set(healthy_hosts);
-  });
+        uint32_t healthy_hosts = 0;
+        uint32_t hosts = 0;
+        for (const auto& host_set : prioritySet().hostSetsPerPriority()) {
+          hosts += host_set->hosts().size();
+          healthy_hosts += host_set->healthyHosts().size();
+        }
+        info_->stats().membership_total_.set(hosts);
+        info_->stats().membership_healthy_.set(healthy_hosts);
+      });
 }
 
-HostVectorConstSharedPtr
-ClusterImplBase::createHealthyHostList(const std::vector<HostSharedPtr>& hosts) {
-  HostVectorSharedPtr healthy_list(new std::vector<HostSharedPtr>());
+HostVectorConstSharedPtr ClusterImplBase::createHealthyHostList(const HostVector& hosts) {
+  HostVectorSharedPtr healthy_list(new HostVector());
   for (const auto& host : hosts) {
     if (host->healthy()) {
       healthy_list->emplace_back(host);
@@ -285,33 +302,21 @@ ClusterImplBase::createHealthyHostList(const std::vector<HostSharedPtr>& hosts) 
   return healthy_list;
 }
 
-HostListsConstSharedPtr
-ClusterImplBase::createHealthyHostLists(const std::vector<std::vector<HostSharedPtr>>& hosts) {
-  HostListsSharedPtr healthy_list(new std::vector<std::vector<HostSharedPtr>>());
-
-  for (const auto& hosts_zone : hosts) {
-    std::vector<HostSharedPtr> current_zone_hosts;
-    for (const auto& host : hosts_zone) {
-      if (host->healthy()) {
-        current_zone_hosts.emplace_back(host);
-      }
-    }
-    healthy_list->push_back(std::move(current_zone_hosts));
-  }
-
-  return healthy_list;
+HostsPerLocalityConstSharedPtr
+ClusterImplBase::createHealthyHostLists(const HostsPerLocality& hosts) {
+  return hosts.filter([](const Host& host) { return host.healthy(); });
 }
 
 bool ClusterInfoImpl::maintenanceMode() const {
   return runtime_.snapshot().featureEnabled(maintenance_mode_runtime_key_, 0);
 }
 
-uint64_t ClusterInfoImpl::parseFeatures(const envoy::api::v2::cluster::Cluster& config) {
+uint64_t ClusterInfoImpl::parseFeatures(const envoy::api::v2::Cluster& config) {
   uint64_t features = 0;
   if (config.has_http2_protocol_options()) {
     features |= Features::HTTP2;
   }
-  if (config.protocol_selection() == envoy::api::v2::cluster::Cluster::USE_DOWNSTREAM_PROTOCOL) {
+  if (config.protocol_selection() == envoy::api::v2::Cluster::USE_DOWNSTREAM_PROTOCOL) {
     features |= Features::USE_DOWNSTREAM_PROTOCOL;
   }
   return features;
@@ -405,28 +410,27 @@ void ClusterImplBase::reloadHealthyHosts() {
   }
 
   for (auto& host_set : prioritySet().hostSetsPerPriority()) {
-    HostVectorConstSharedPtr hosts_copy(new std::vector<HostSharedPtr>(host_set->hosts()));
-    HostListsConstSharedPtr hosts_per_locality_copy(
-        new std::vector<std::vector<HostSharedPtr>>(host_set->hostsPerLocality()));
+    HostVectorConstSharedPtr hosts_copy(new HostVector(host_set->hosts()));
+    HostsPerLocalityConstSharedPtr hosts_per_locality_copy = host_set->hostsPerLocality().clone();
     host_set->updateHosts(hosts_copy, createHealthyHostList(host_set->hosts()),
                           hosts_per_locality_copy,
                           createHealthyHostLists(host_set->hostsPerLocality()), {}, {});
   }
 }
 
-ClusterInfoImpl::ResourceManagers::ResourceManagers(const envoy::api::v2::cluster::Cluster& config,
+ClusterInfoImpl::ResourceManagers::ResourceManagers(const envoy::api::v2::Cluster& config,
                                                     Runtime::Loader& runtime,
                                                     const std::string& cluster_name) {
   managers_[enumToInt(ResourcePriority::Default)] =
-      load(config, runtime, cluster_name, envoy::api::v2::RoutingPriority::DEFAULT);
+      load(config, runtime, cluster_name, envoy::api::v2::core::RoutingPriority::DEFAULT);
   managers_[enumToInt(ResourcePriority::High)] =
-      load(config, runtime, cluster_name, envoy::api::v2::RoutingPriority::HIGH);
+      load(config, runtime, cluster_name, envoy::api::v2::core::RoutingPriority::HIGH);
 }
 
 ResourceManagerImplPtr
-ClusterInfoImpl::ResourceManagers::load(const envoy::api::v2::cluster::Cluster& config,
+ClusterInfoImpl::ResourceManagers::load(const envoy::api::v2::Cluster& config,
                                         Runtime::Loader& runtime, const std::string& cluster_name,
-                                        const envoy::api::v2::RoutingPriority& priority) {
+                                        const envoy::api::v2::core::RoutingPriority& priority) {
   uint64_t max_connections = 1024;
   uint64_t max_pending_requests = 1024;
   uint64_t max_requests = 1024;
@@ -434,10 +438,10 @@ ClusterInfoImpl::ResourceManagers::load(const envoy::api::v2::cluster::Cluster& 
 
   std::string priority_name;
   switch (priority) {
-  case envoy::api::v2::RoutingPriority::DEFAULT:
+  case envoy::api::v2::core::RoutingPriority::DEFAULT:
     priority_name = "default";
     break;
-  case envoy::api::v2::RoutingPriority::HIGH:
+  case envoy::api::v2::core::RoutingPriority::HIGH:
     priority_name = "high";
     break;
   default:
@@ -464,19 +468,19 @@ ClusterInfoImpl::ResourceManagers::load(const envoy::api::v2::cluster::Cluster& 
       runtime, runtime_prefix, max_connections, max_pending_requests, max_requests, max_retries)};
 }
 
-StaticClusterImpl::StaticClusterImpl(const envoy::api::v2::cluster::Cluster& cluster,
+StaticClusterImpl::StaticClusterImpl(const envoy::api::v2::Cluster& cluster,
                                      Runtime::Loader& runtime, Stats::Store& stats,
                                      Ssl::ContextManager& ssl_context_manager, ClusterManager& cm,
                                      bool added_via_api)
     : ClusterImplBase(cluster, cm.sourceAddress(), runtime, stats, ssl_context_manager,
                       added_via_api),
-      initial_hosts_(new std::vector<HostSharedPtr>()) {
+      initial_hosts_(new HostVector()) {
 
   for (const auto& host : cluster.hosts()) {
     initial_hosts_->emplace_back(
         HostSharedPtr{new HostImpl(info_, "", Network::Address::resolveProtoAddress(host),
-                                   envoy::api::v2::Metadata::default_instance(), 1,
-                                   envoy::api::v2::Locality().default_instance())});
+                                   envoy::api::v2::core::Metadata::default_instance(), 1,
+                                   envoy::api::v2::core::Locality().default_instance())});
   }
 }
 
@@ -493,17 +497,17 @@ void StaticClusterImpl::startPreInit() {
   ASSERT(priority_set_.hostSetsPerPriority().size() == 1);
   auto& first_host_set = priority_set_.getOrCreateHostSet(0);
   first_host_set.updateHosts(initial_hosts_, createHealthyHostList(*initial_hosts_),
-                             empty_host_lists_, empty_host_lists_, *initial_hosts_, {});
+                             HostsPerLocalityImpl::empty(), HostsPerLocalityImpl::empty(),
+                             *initial_hosts_, {});
   initial_hosts_ = nullptr;
 
   onPreInitComplete();
 }
 
-bool BaseDynamicClusterImpl::updateDynamicHostList(const std::vector<HostSharedPtr>& new_hosts,
-                                                   std::vector<HostSharedPtr>& current_hosts,
-                                                   std::vector<HostSharedPtr>& hosts_added,
-                                                   std::vector<HostSharedPtr>& hosts_removed,
-                                                   bool depend_on_hc) {
+bool BaseDynamicClusterImpl::updateDynamicHostList(const HostVector& new_hosts,
+                                                   HostVector& current_hosts,
+                                                   HostVector& hosts_added,
+                                                   HostVector& hosts_removed, bool depend_on_hc) {
   uint64_t max_host_weight = 1;
 
   // Go through and see if the list we have is different from what we just got. If it is, we
@@ -512,7 +516,7 @@ bool BaseDynamicClusterImpl::updateDynamicHostList(const std::vector<HostSharedP
   // duplicates here. It's possible for DNS to return the same address multiple times, and a bad
   // SDS implementation could do the same thing.
   std::unordered_set<std::string> host_addresses;
-  std::vector<HostSharedPtr> final_hosts;
+  HostVector final_hosts;
   for (const HostSharedPtr& host : new_hosts) {
     if (host_addresses.count(host->address()->asString())) {
       continue;
@@ -582,7 +586,7 @@ bool BaseDynamicClusterImpl::updateDynamicHostList(const std::vector<HostSharedP
   }
 }
 
-StrictDnsClusterImpl::StrictDnsClusterImpl(const envoy::api::v2::cluster::Cluster& cluster,
+StrictDnsClusterImpl::StrictDnsClusterImpl(const envoy::api::v2::Cluster& cluster,
                                            Runtime::Loader& runtime, Stats::Store& stats,
                                            Ssl::ContextManager& ssl_context_manager,
                                            Network::DnsResolverSharedPtr dns_resolver,
@@ -594,13 +598,13 @@ StrictDnsClusterImpl::StrictDnsClusterImpl(const envoy::api::v2::cluster::Cluste
       dns_refresh_rate_ms_(
           std::chrono::milliseconds(PROTOBUF_GET_MS_OR_DEFAULT(cluster, dns_refresh_rate, 5000))) {
   switch (cluster.dns_lookup_family()) {
-  case envoy::api::v2::cluster::Cluster::V6_ONLY:
+  case envoy::api::v2::Cluster::V6_ONLY:
     dns_lookup_family_ = Network::DnsLookupFamily::V6Only;
     break;
-  case envoy::api::v2::cluster::Cluster::V4_ONLY:
+  case envoy::api::v2::Cluster::V4_ONLY:
     dns_lookup_family_ = Network::DnsLookupFamily::V4Only;
     break;
-  case envoy::api::v2::cluster::Cluster::AUTO:
+  case envoy::api::v2::Cluster::AUTO:
     dns_lookup_family_ = Network::DnsLookupFamily::Auto;
     break;
   default:
@@ -621,10 +625,10 @@ void StrictDnsClusterImpl::startPreInit() {
   }
 }
 
-void StrictDnsClusterImpl::updateAllHosts(const std::vector<HostSharedPtr>& hosts_added,
-                                          const std::vector<HostSharedPtr>& hosts_removed) {
+void StrictDnsClusterImpl::updateAllHosts(const HostVector& hosts_added,
+                                          const HostVector& hosts_removed) {
   // At this point we know that we are different so make a new host list and notify.
-  HostVectorSharedPtr new_hosts(new std::vector<HostSharedPtr>());
+  HostVectorSharedPtr new_hosts(new HostVector());
   for (const ResolveTargetPtr& target : resolve_targets_) {
     for (const HostSharedPtr& host : target->hosts_) {
       new_hosts->emplace_back(host);
@@ -634,8 +638,9 @@ void StrictDnsClusterImpl::updateAllHosts(const std::vector<HostSharedPtr>& host
   // Given the current config, only EDS clusters support multiple priorities.
   ASSERT(priority_set_.hostSetsPerPriority().size() == 1);
   auto& first_host_set = priority_set_.getOrCreateHostSet(0);
-  first_host_set.updateHosts(new_hosts, createHealthyHostList(*new_hosts), empty_host_lists_,
-                             empty_host_lists_, hosts_added, hosts_removed);
+  first_host_set.updateHosts(new_hosts, createHealthyHostList(*new_hosts),
+                             HostsPerLocalityImpl::empty(), HostsPerLocalityImpl::empty(),
+                             hosts_added, hosts_removed);
 }
 
 StrictDnsClusterImpl::ResolveTarget::ResolveTarget(StrictDnsClusterImpl& parent,
@@ -662,7 +667,7 @@ void StrictDnsClusterImpl::ResolveTarget::startResolve() {
         ENVOY_LOG(debug, "async DNS resolution complete for {}", dns_address_);
         parent_.info_->stats().update_success_.inc();
 
-        std::vector<HostSharedPtr> new_hosts;
+        HostVector new_hosts;
         for (const Network::Address::InstanceConstSharedPtr& address : address_list) {
           // TODO(mattklein123): Currently the DNS interface does not consider port. We need to make
           // a new address that has port in it. We need to both support IPv6 as well as potentially
@@ -670,12 +675,12 @@ void StrictDnsClusterImpl::ResolveTarget::startResolve() {
           ASSERT(address != nullptr);
           new_hosts.emplace_back(new HostImpl(parent_.info_, dns_address_,
                                               Network::Utility::getAddressWithPort(*address, port_),
-                                              envoy::api::v2::Metadata::default_instance(), 1,
-                                              envoy::api::v2::Locality().default_instance()));
+                                              envoy::api::v2::core::Metadata::default_instance(), 1,
+                                              envoy::api::v2::core::Locality().default_instance()));
         }
 
-        std::vector<HostSharedPtr> hosts_added;
-        std::vector<HostSharedPtr> hosts_removed;
+        HostVector hosts_added;
+        HostVector hosts_removed;
         if (parent_.updateDynamicHostList(new_hosts, hosts_, hosts_added, hosts_removed, false)) {
           ENVOY_LOG(debug, "DNS hosts have changed for {}", dns_address_);
           parent_.updateAllHosts(hosts_added, hosts_removed);

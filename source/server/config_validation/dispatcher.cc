@@ -5,10 +5,9 @@
 namespace Envoy {
 namespace Event {
 
-Network::ClientConnectionPtr
-ValidationDispatcher::createClientConnection(Network::Address::InstanceConstSharedPtr,
-                                             Network::Address::InstanceConstSharedPtr,
-                                             Network::TransportSocketPtr&&) {
+Network::ClientConnectionPtr ValidationDispatcher::createClientConnection(
+    Network::Address::InstanceConstSharedPtr, Network::Address::InstanceConstSharedPtr,
+    Network::TransportSocketPtr&&, const Network::ConnectionSocket::OptionsSharedPtr&) {
   NOT_IMPLEMENTED;
 }
 
@@ -17,7 +16,7 @@ Network::DnsResolverSharedPtr ValidationDispatcher::createDnsResolver(
   NOT_IMPLEMENTED;
 }
 
-Network::ListenerPtr ValidationDispatcher::createListener(Network::ListenSocket&,
+Network::ListenerPtr ValidationDispatcher::createListener(Network::Socket&,
                                                           Network::ListenerCallbacks&, bool, bool) {
   NOT_IMPLEMENTED;
 }

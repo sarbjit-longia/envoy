@@ -2,7 +2,8 @@
 
 #include <string>
 
-#include "envoy/api/v2/cluster/cluster.pb.validate.h"
+#include "envoy/api/v2/cds.pb.validate.h"
+#include "envoy/api/v2/cluster/outlier_detection.pb.validate.h"
 
 #include "common/common/cleanup.h"
 #include "common/config/resources.h"
@@ -14,8 +15,8 @@
 namespace Envoy {
 namespace Upstream {
 
-CdsApiPtr CdsApiImpl::create(const envoy::api::v2::ConfigSource& cds_config,
-                             const Optional<envoy::api::v2::ConfigSource>& eds_config,
+CdsApiPtr CdsApiImpl::create(const envoy::api::v2::core::ConfigSource& cds_config,
+                             const Optional<envoy::api::v2::core::ConfigSource>& eds_config,
                              ClusterManager& cm, Event::Dispatcher& dispatcher,
                              Runtime::RandomGenerator& random,
                              const LocalInfo::LocalInfo& local_info, Stats::Scope& scope) {
@@ -23,26 +24,24 @@ CdsApiPtr CdsApiImpl::create(const envoy::api::v2::ConfigSource& cds_config,
       new CdsApiImpl(cds_config, eds_config, cm, dispatcher, random, local_info, scope)};
 }
 
-CdsApiImpl::CdsApiImpl(const envoy::api::v2::ConfigSource& cds_config,
-                       const Optional<envoy::api::v2::ConfigSource>& eds_config, ClusterManager& cm,
-                       Event::Dispatcher& dispatcher, Runtime::RandomGenerator& random,
-                       const LocalInfo::LocalInfo& local_info, Stats::Scope& scope)
+CdsApiImpl::CdsApiImpl(const envoy::api::v2::core::ConfigSource& cds_config,
+                       const Optional<envoy::api::v2::core::ConfigSource>& eds_config,
+                       ClusterManager& cm, Event::Dispatcher& dispatcher,
+                       Runtime::RandomGenerator& random, const LocalInfo::LocalInfo& local_info,
+                       Stats::Scope& scope)
     : cm_(cm), scope_(scope.createScope("cluster_manager.cds.")) {
   Config::Utility::checkLocalInfo("cds", local_info);
 
-  // TODO: dummy to force linking the gRPC service proto
-  envoy::service::discovery::v2::CdsDummy dummy;
-
   subscription_ =
-      Config::SubscriptionFactory::subscriptionFromConfigSource<envoy::api::v2::cluster::Cluster>(
+      Config::SubscriptionFactory::subscriptionFromConfigSource<envoy::api::v2::Cluster>(
           cds_config, local_info.node(), dispatcher, cm, random, *scope_,
           [this, &cds_config, &eds_config, &cm, &dispatcher, &random,
-           &local_info]() -> Config::Subscription<envoy::api::v2::cluster::Cluster>* {
+           &local_info]() -> Config::Subscription<envoy::api::v2::Cluster>* {
             return new CdsSubscription(Config::Utility::generateStats(*scope_), cds_config,
                                        eds_config, cm, dispatcher, random, local_info);
           },
-          "envoy.service.discovery.v2.ClusterDiscoveryService.FetchClusters",
-          "envoy.service.discovery.v2.ClusterDiscoveryService.StreamClusters");
+          "envoy.api.v2.ClusterDiscoveryService.FetchClusters",
+          "envoy.api.v2.ClusterDiscoveryService.StreamClusters");
 }
 
 void CdsApiImpl::onConfigUpdate(const ResourceVector& resources) {

@@ -44,6 +44,7 @@ envoy_cc_library(
         "//source/common/http:utility_lib",
         "//source/common/http/http1:codec_lib",
         "//source/common/network:listen_socket_lib",
+        "//source/common/network:raw_buffer_socket_lib",
         "//source/common/profiler:profiler_lib",
         "//source/common/router:config_lib",
         "//source/common/upstream:host_utility_lib",
@@ -71,6 +72,6 @@ envoy_cc_library(
         "//source/common/http:utility_lib",
         "//source/common/protobuf:utility_lib",
         "//source/server/config/network:http_connection_manager_lib",
-        "@envoy_api//envoy/api/v2/filter/http:health_check_cc",
+        "@envoy_api//envoy/config/filter/http/health_check/v2:health_check_cc",
     ],
 )

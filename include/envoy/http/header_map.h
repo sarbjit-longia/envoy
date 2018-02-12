@@ -87,6 +87,11 @@ public:
   const char* c_str() const { return buffer_.ref_; }
 
   /**
+   * @return a std::string.
+   */
+  std::string getString() const { return std::string(buffer_.ref_, string_length_); }
+
+  /**
    * Return the string to a default state. Reference strings are not touched. Both inline/dynamic
    * strings are reset to zero size.
    */
@@ -226,6 +231,7 @@ private:
  * O(1) access to these headers without even a hash lookup.
  */
 #define ALL_INLINE_HEADERS(HEADER_FUNC)                                                            \
+  HEADER_FUNC(AcceptEncoding)                                                                      \
   HEADER_FUNC(AccessControlRequestHeaders)                                                         \
   HEADER_FUNC(AccessControlRequestMethod)                                                          \
   HEADER_FUNC(AccessControlAllowOrigin)                                                            \
@@ -238,6 +244,7 @@ private:
   HEADER_FUNC(CacheControl)                                                                        \
   HEADER_FUNC(ClientTraceId)                                                                       \
   HEADER_FUNC(Connection)                                                                          \
+  HEADER_FUNC(ContentEncoding)                                                                     \
   HEADER_FUNC(ContentLength)                                                                       \
   HEADER_FUNC(ContentType)                                                                         \
   HEADER_FUNC(Date)                                                                                \
@@ -261,6 +268,7 @@ private:
   HEADER_FUNC(EnvoyUpstreamRequestTimeoutAltResponse)                                              \
   HEADER_FUNC(EnvoyUpstreamRequestTimeoutMs)                                                       \
   HEADER_FUNC(EnvoyUpstreamServiceTime)                                                            \
+  HEADER_FUNC(Etag)                                                                                \
   HEADER_FUNC(Expect)                                                                              \
   HEADER_FUNC(ForwardedClientCert)                                                                 \
   HEADER_FUNC(ForwardedFor)                                                                        \
@@ -270,6 +278,7 @@ private:
   HEADER_FUNC(GrpcStatus)                                                                          \
   HEADER_FUNC(Host)                                                                                \
   HEADER_FUNC(KeepAlive)                                                                           \
+  HEADER_FUNC(LastModified)                                                                        \
   HEADER_FUNC(Method)                                                                              \
   HEADER_FUNC(Origin)                                                                              \
   HEADER_FUNC(OtSpanContext)                                                                       \
@@ -284,6 +293,7 @@ private:
   HEADER_FUNC(TransferEncoding)                                                                    \
   HEADER_FUNC(Upgrade)                                                                             \
   HEADER_FUNC(UserAgent)                                                                           \
+  HEADER_FUNC(Vary)                                                                                \
   HEADER_FUNC(XB3TraceId)                                                                          \
   HEADER_FUNC(XB3SpanId)                                                                           \
   HEADER_FUNC(XB3ParentSpanId)                                                                     \
@@ -411,6 +421,7 @@ public:
    * @return the header entry if it exists otherwise nullptr.
    */
   virtual const HeaderEntry* get(const LowerCaseString& key) const PURE;
+  virtual HeaderEntry* get(const LowerCaseString& key) PURE;
 
   // aliases to make iterate() and iterateReverse() callbacks easier to read
   enum class Iterate { Continue, Break };

@@ -28,8 +28,9 @@ using testing::_;
 namespace Envoy {
 namespace Redis {
 
-envoy::api::v2::filter::network::RedisProxy parseProtoFromJson(const std::string& json_string) {
-  envoy::api::v2::filter::network::RedisProxy config;
+envoy::config::filter::network::redis_proxy::v2::RedisProxy
+parseProtoFromJson(const std::string& json_string) {
+  envoy::config::filter::network::redis_proxy::v2::RedisProxy config;
   auto json_object_ptr = Json::Factory::loadFromString(json_string);
   Config::FilterJson::translateRedisProxy(*json_object_ptr, config);
 
@@ -53,7 +54,7 @@ TEST_F(RedisProxyFilterConfigTest, Normal) {
   }
   )EOF";
 
-  envoy::api::v2::filter::network::RedisProxy proto_config =
+  envoy::config::filter::network::redis_proxy::v2::RedisProxy proto_config =
       Envoy::Redis::parseProtoFromJson(json_string);
   ProxyFilterConfig config(proto_config, cm_, store_, drain_decision_, runtime_);
   EXPECT_EQ("fake_cluster", config.cluster_name_);
@@ -68,7 +69,7 @@ TEST_F(RedisProxyFilterConfigTest, InvalidCluster) {
   }
   )EOF";
 
-  envoy::api::v2::filter::network::RedisProxy proto_config =
+  envoy::config::filter::network::redis_proxy::v2::RedisProxy proto_config =
       Envoy::Redis::parseProtoFromJson(json_string);
 
   EXPECT_CALL(cm_, get("fake_cluster")).WillOnce(Return(nullptr));
@@ -85,7 +86,7 @@ TEST_F(RedisProxyFilterConfigTest, InvalidAddedByApi) {
   }
   )EOF";
 
-  envoy::api::v2::filter::network::RedisProxy proto_config =
+  envoy::config::filter::network::redis_proxy::v2::RedisProxy proto_config =
       Envoy::Redis::parseProtoFromJson(json_string);
 
   ON_CALL(*cm_.thread_local_cluster_.cluster_.info_, addedViaApi()).WillByDefault(Return(true));
@@ -117,7 +118,7 @@ public:
     }
     )EOF";
 
-    envoy::api::v2::filter::network::RedisProxy proto_config =
+    envoy::config::filter::network::redis_proxy::v2::RedisProxy proto_config =
         Envoy::Redis::parseProtoFromJson(json_string);
     NiceMock<Upstream::MockClusterManager> cm;
     config_.reset(new ProxyFilterConfig(proto_config, cm, store_, drain_decision_, runtime_));
@@ -126,6 +127,10 @@ public:
     EXPECT_EQ(Network::FilterStatus::Continue, filter_->onNewConnection());
     EXPECT_EQ(1UL, config_->stats_.downstream_cx_total_.value());
     EXPECT_EQ(1UL, config_->stats_.downstream_cx_active_.value());
+
+    // NOP currently.
+    filter_->onAboveWriteBufferHighWatermark();
+    filter_->onBelowWriteBufferLowWatermark();
   }
 
   ~RedisProxyFilterTest() {
@@ -172,7 +177,7 @@ TEST_F(RedisProxyFilterTest, OutOfOrderResponseWithDrainClose) {
         .WillOnce(DoAll(WithArg<1>(SaveArgAddress(&request_callbacks2)), Return(request_handle2)));
     decoder_callbacks_->onRespValue(std::move(request2));
   }));
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data, false));
 
   EXPECT_EQ(2UL, config_->stats_.downstream_rq_total_.value());
   EXPECT_EQ(2UL, config_->stats_.downstream_rq_active_.value());
@@ -184,7 +189,7 @@ TEST_F(RedisProxyFilterTest, OutOfOrderResponseWithDrainClose) {
   RespValuePtr response1(new RespValue());
   EXPECT_CALL(*encoder_, encode(Ref(*response1), _));
   EXPECT_CALL(*encoder_, encode(Ref(*response2_ptr), _));
-  EXPECT_CALL(filter_callbacks_.connection_, write(_));
+  EXPECT_CALL(filter_callbacks_.connection_, write(_, _));
   EXPECT_CALL(drain_decision_, drainClose()).WillOnce(Return(true));
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("redis.drain_close_enabled", 100))
       .WillOnce(Return(true));
@@ -213,7 +218,7 @@ TEST_F(RedisProxyFilterTest, OutOfOrderResponseDownstreamDisconnectBeforeFlush) 
         .WillOnce(DoAll(WithArg<1>(SaveArgAddress(&request_callbacks2)), Return(request_handle2)));
     decoder_callbacks_->onRespValue(std::move(request2));
   }));
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data, false));
 
   EXPECT_EQ(2UL, config_->stats_.downstream_rq_total_.value());
   EXPECT_EQ(2UL, config_->stats_.downstream_rq_active_.value());
@@ -237,7 +242,7 @@ TEST_F(RedisProxyFilterTest, DownstreamDisconnectWithActive) {
         .WillOnce(DoAll(WithArg<1>(SaveArgAddress(&request_callbacks1)), Return(request_handle1)));
     decoder_callbacks_->onRespValue(std::move(request1));
   }));
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data, false));
 
   EXPECT_CALL(*request_handle1, cancel());
   filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
@@ -259,12 +264,12 @@ TEST_F(RedisProxyFilterTest, ImmediateResponse) {
             error->type(RespType::Error);
             error->asString() = "no healthy upstream";
             EXPECT_CALL(*encoder_, encode(Eq(ByRef(*error)), _));
-            EXPECT_CALL(filter_callbacks_.connection_, write(_));
+            EXPECT_CALL(filter_callbacks_.connection_, write(_, _));
             callbacks.onResponse(std::move(error));
             return nullptr;
           }));
 
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(fake_data, false));
   filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
 }
 
@@ -280,9 +285,9 @@ TEST_F(RedisProxyFilterTest, ProtocolError) {
   error.type(RespType::Error);
   error.asString() = "downstream protocol error";
   EXPECT_CALL(*encoder_, encode(Eq(ByRef(error)), _));
-  EXPECT_CALL(filter_callbacks_.connection_, write(_));
+  EXPECT_CALL(filter_callbacks_.connection_, write(_, _));
   EXPECT_CALL(filter_callbacks_.connection_, close(Network::ConnectionCloseType::NoFlush));
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(fake_data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(fake_data, false));
 
   EXPECT_EQ(1UL, store_.counter("redis.foo.downstream_cx_protocol_error").value());
 }

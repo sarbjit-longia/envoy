@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "envoy/api/v2/cluster/cluster.pb.h"
+#include "envoy/api/v2/cds.pb.h"
 #include "envoy/common/optional.h"
 
 #include "common/config/metadata.h"
@@ -96,13 +96,13 @@ public:
   }
 
   void configureHostSet(const HostURLMetadataMap& host_metadata, MockHostSet& host_set) {
-    std::vector<HostSharedPtr> hosts;
+    HostVector hosts;
     for (const auto& it : host_metadata) {
       hosts.emplace_back(makeHost(it.first, it.second));
     }
 
     host_set.hosts_ = hosts;
-    host_set.hosts_per_locality_ = std::vector<std::vector<HostSharedPtr>>({hosts});
+    host_set.hosts_per_locality_ = makeHostsPerLocality({hosts});
     host_set.healthy_hosts_ = host_set.hosts_;
     host_set.healthy_hosts_per_locality_ = host_set.hosts_per_locality_;
   }
@@ -122,17 +122,17 @@ public:
     }
 
     lb_.reset(new SubsetLoadBalancer(lb_type_, priority_set_, nullptr, stats_, runtime_, random_,
-                                     subset_info_, ring_hash_lb_config_));
+                                     subset_info_, ring_hash_lb_config_, common_config_));
   }
 
   void zoneAwareInit(const std::vector<HostURLMetadataMap>& host_metadata_per_locality,
                      const std::vector<HostURLMetadataMap>& local_host_metadata_per_locality) {
     EXPECT_CALL(subset_info_, isEnabled()).WillRepeatedly(Return(true));
 
-    std::vector<HostSharedPtr> hosts;
-    std::vector<std::vector<HostSharedPtr>> hosts_per_locality;
+    HostVector hosts;
+    std::vector<HostVector> hosts_per_locality;
     for (const auto& host_metadata : host_metadata_per_locality) {
-      std::vector<HostSharedPtr> locality_hosts;
+      HostVector locality_hosts;
       for (const auto& host_entry : host_metadata) {
         HostSharedPtr host = makeHost(host_entry.first, host_entry.second);
         hosts.emplace_back(host);
@@ -142,32 +142,34 @@ public:
     }
 
     host_set_.hosts_ = hosts;
-    host_set_.hosts_per_locality_ = hosts_per_locality;
+    host_set_.hosts_per_locality_ = makeHostsPerLocality(std::move(hosts_per_locality));
 
     host_set_.healthy_hosts_ = host_set_.healthy_hosts_;
     host_set_.healthy_hosts_per_locality_ = host_set_.hosts_per_locality_;
 
-    local_hosts_.reset(new std::vector<HostSharedPtr>());
-    local_hosts_per_locality_.reset(new std::vector<std::vector<HostSharedPtr>>());
+    local_hosts_.reset(new HostVector());
+    std::vector<HostVector> local_hosts_per_locality_vector;
     for (const auto& local_host_metadata : local_host_metadata_per_locality) {
-      std::vector<HostSharedPtr> local_locality_hosts;
+      HostVector local_locality_hosts;
       for (const auto& host_entry : local_host_metadata) {
         HostSharedPtr host = makeHost(host_entry.first, host_entry.second);
         local_hosts_->emplace_back(host);
         local_locality_hosts.emplace_back(host);
       }
-      local_hosts_per_locality_->emplace_back(local_locality_hosts);
+      local_hosts_per_locality_vector.emplace_back(local_locality_hosts);
     }
+    local_hosts_per_locality_ = makeHostsPerLocality(std::move(local_hosts_per_locality_vector));
 
     local_priority_set_.getOrCreateHostSet(0).updateHosts(
         local_hosts_, local_hosts_, local_hosts_per_locality_, local_hosts_per_locality_, {}, {});
 
     lb_.reset(new SubsetLoadBalancer(lb_type_, priority_set_, &local_priority_set_, stats_,
-                                     runtime_, random_, subset_info_, ring_hash_lb_config_));
+                                     runtime_, random_, subset_info_, ring_hash_lb_config_,
+                                     common_config_));
   }
 
   HostSharedPtr makeHost(const std::string& url, const HostMetadata& metadata) {
-    envoy::api::v2::Metadata m;
+    envoy::api::v2::core::Metadata m;
     for (const auto& m_it : metadata) {
       Config::Metadata::mutableMetadataValue(m, Config::MetadataFilters::get().ENVOY_LB, m_it.first)
           .set_string_value(m_it.second);
@@ -189,8 +191,8 @@ public:
     return default_subset;
   }
 
-  void modifyHosts(std::vector<HostSharedPtr> add, std::vector<HostSharedPtr> remove,
-                   Optional<uint32_t> add_in_locality = {}, uint32_t priority = 0) {
+  void modifyHosts(HostVector add, HostVector remove, Optional<uint32_t> add_in_locality = {},
+                   uint32_t priority = 0) {
     MockHostSet& host_set = *priority_set_.getMockHostSet(priority);
     for (const auto& host : remove) {
       auto it = std::find(host_set.hosts_.begin(), host_set.hosts_.end(), host);
@@ -199,12 +201,14 @@ public:
       }
       host_set.healthy_hosts_ = host_set.hosts_;
 
-      for (auto& locality_hosts : host_set.hosts_per_locality_) {
+      std::vector<HostVector> locality_hosts_copy = host_set.hosts_per_locality_->get();
+      for (auto& locality_hosts : locality_hosts_copy) {
         auto it = std::find(locality_hosts.begin(), locality_hosts.end(), host);
         if (it != locality_hosts.end()) {
           locality_hosts.erase(it);
         }
       }
+      host_set.hosts_per_locality_ = makeHostsPerLocality(std::move(locality_hosts_copy));
       host_set.healthy_hosts_per_locality_ = host_set.hosts_per_locality_;
     }
 
@@ -217,7 +221,9 @@ public:
       host_set.healthy_hosts_ = host_set.hosts_;
 
       if (add_in_locality.valid()) {
-        host_set.hosts_per_locality_[add_in_locality.value()].emplace_back(host);
+        std::vector<HostVector> locality_hosts_copy = host_set.hosts_per_locality_->get();
+        locality_hosts_copy[add_in_locality.value()].emplace_back(host);
+        host_set.hosts_per_locality_ = makeHostsPerLocality(std::move(locality_hosts_copy));
         host_set.healthy_hosts_per_locality_ = host_set.hosts_per_locality_;
       }
     }
@@ -231,20 +237,21 @@ public:
     }
   }
 
-  void modifyLocalHosts(std::vector<HostSharedPtr> add, std::vector<HostSharedPtr> remove,
-                        uint32_t add_in_locality) {
+  void modifyLocalHosts(HostVector add, HostVector remove, uint32_t add_in_locality) {
     for (const auto& host : remove) {
       auto it = std::find(local_hosts_->begin(), local_hosts_->end(), host);
       if (it != local_hosts_->end()) {
         local_hosts_->erase(it);
       }
 
-      for (auto& locality_hosts : *local_hosts_per_locality_) {
+      std::vector<HostVector> locality_hosts_copy = local_hosts_per_locality_->get();
+      for (auto& locality_hosts : locality_hosts_copy) {
         auto it = std::find(locality_hosts.begin(), locality_hosts.end(), host);
         if (it != locality_hosts.end()) {
           locality_hosts.erase(it);
         }
       }
+      local_hosts_per_locality_ = makeHostsPerLocality(std::move(locality_hosts_copy));
     }
 
     if (GetParam() == REMOVES_FIRST && !remove.empty()) {
@@ -255,7 +262,9 @@ public:
 
     for (const auto& host : add) {
       local_hosts_->emplace_back(host);
-      (*local_hosts_per_locality_)[add_in_locality].emplace_back(host);
+      std::vector<HostVector> locality_hosts_copy = local_hosts_per_locality_->get();
+      locality_hosts_copy[add_in_locality].emplace_back(host);
+      local_hosts_per_locality_ = makeHostsPerLocality(std::move(locality_hosts_copy));
     }
 
     if (GetParam() == REMOVES_FIRST) {
@@ -273,7 +282,7 @@ public:
 
   void doLbTypeTest(LoadBalancerType type) {
     EXPECT_CALL(subset_info_, fallbackPolicy())
-        .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+        .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
     lb_type_ = type;
     init({{"tcp://127.0.0.1:80", {{"version", "1.0"}}}});
@@ -291,20 +300,21 @@ public:
   MockHostSet& host_set_ = *priority_set_.getMockHostSet(0);
   NiceMock<MockLoadBalancerSubsetInfo> subset_info_;
   std::shared_ptr<MockClusterInfo> info_{new NiceMock<MockClusterInfo>()};
-  envoy::api::v2::cluster::Cluster::RingHashLbConfig ring_hash_lb_config_;
+  envoy::api::v2::Cluster::RingHashLbConfig ring_hash_lb_config_;
+  envoy::api::v2::Cluster::CommonLbConfig common_config_;
   NiceMock<Runtime::MockLoader> runtime_;
   NiceMock<Runtime::MockRandomGenerator> random_;
   Stats::IsolatedStoreImpl stats_store_;
   ClusterStats stats_;
   PrioritySetImpl local_priority_set_;
   HostVectorSharedPtr local_hosts_;
-  HostListsSharedPtr local_hosts_per_locality_;
+  HostsPerLocalitySharedPtr local_hosts_per_locality_;
   std::shared_ptr<SubsetLoadBalancer> lb_;
 };
 
 TEST_F(SubsetLoadBalancerTest, NoFallback) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   init();
 
@@ -315,7 +325,7 @@ TEST_F(SubsetLoadBalancerTest, NoFallback) {
 
 TEST_P(SubsetLoadBalancerTest, NoFallbackAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   init();
 
@@ -328,7 +338,7 @@ TEST_P(SubsetLoadBalancerTest, NoFallbackAfterUpdate) {
 
 TEST_F(SubsetLoadBalancerTest, FallbackAnyEndpoint) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
   init();
 
@@ -339,7 +349,7 @@ TEST_F(SubsetLoadBalancerTest, FallbackAnyEndpoint) {
 
 TEST_P(SubsetLoadBalancerTest, FallbackAnyEndpointAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
   init();
 
@@ -353,7 +363,7 @@ TEST_P(SubsetLoadBalancerTest, FallbackAnyEndpointAfterUpdate) {
 
 TEST_F(SubsetLoadBalancerTest, FallbackDefaultSubset) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
 
   const ProtobufWkt::Struct default_subset = makeDefaultSubset({{"version", "default"}});
   EXPECT_CALL(subset_info_, defaultSubset()).WillRepeatedly(ReturnRef(default_subset));
@@ -370,7 +380,7 @@ TEST_F(SubsetLoadBalancerTest, FallbackDefaultSubset) {
 
 TEST_P(SubsetLoadBalancerTest, FallbackDefaultSubsetAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
 
   const ProtobufWkt::Struct default_subset = makeDefaultSubset({{"version", "default"}});
   EXPECT_CALL(subset_info_, defaultSubset()).WillRepeatedly(ReturnRef(default_subset));
@@ -392,7 +402,7 @@ TEST_P(SubsetLoadBalancerTest, FallbackDefaultSubsetAfterUpdate) {
 
 TEST_F(SubsetLoadBalancerTest, FallbackEmptyDefaultSubsetConvertsToAnyEndpoint) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
 
   EXPECT_CALL(subset_info_, defaultSubset())
       .WillRepeatedly(ReturnRef(ProtobufWkt::Struct::default_instance()));
@@ -407,7 +417,7 @@ TEST_F(SubsetLoadBalancerTest, FallbackEmptyDefaultSubsetConvertsToAnyEndpoint) 
 
 TEST_F(SubsetLoadBalancerTest, FallbackOnUnknownMetadata) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
   init();
 
@@ -420,7 +430,7 @@ TEST_F(SubsetLoadBalancerTest, FallbackOnUnknownMetadata) {
 
 TEST_F(SubsetLoadBalancerTest, BalancesSubset) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -445,7 +455,7 @@ TEST_F(SubsetLoadBalancerTest, BalancesSubset) {
 
 TEST_P(SubsetLoadBalancerTest, BalancesSubsetAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -483,7 +493,7 @@ TEST_P(SubsetLoadBalancerTest, BalancesSubsetAfterUpdate) {
 // Test that adding backends to a failover group causes no problems.
 TEST_P(SubsetLoadBalancerTest, UpdateFailover) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -509,7 +519,7 @@ TEST_P(SubsetLoadBalancerTest, UpdateFailover) {
 
 TEST_P(SubsetLoadBalancerTest, UpdateRemovingLastSubsetHost) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -542,7 +552,7 @@ TEST_P(SubsetLoadBalancerTest, UpdateRemovingLastSubsetHost) {
 
 TEST_P(SubsetLoadBalancerTest, UpdateRemovingUnknownHost) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"stage", "version"}, {"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -564,7 +574,7 @@ TEST_P(SubsetLoadBalancerTest, UpdateRemovingUnknownHost) {
 
 TEST_F(SubsetLoadBalancerTest, BalancesDisjointSubsets) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}, {"hardware"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -587,7 +597,7 @@ TEST_F(SubsetLoadBalancerTest, BalancesDisjointSubsets) {
 
 TEST_F(SubsetLoadBalancerTest, BalancesOverlappingSubsets) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {
       {"stage", "version"},
@@ -624,7 +634,7 @@ TEST_F(SubsetLoadBalancerTest, BalancesOverlappingSubsets) {
 
 TEST_F(SubsetLoadBalancerTest, BalancesNestedSubsets) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {
       {"stage", "version"},
@@ -659,7 +669,7 @@ TEST_F(SubsetLoadBalancerTest, BalancesNestedSubsets) {
 
 TEST_F(SubsetLoadBalancerTest, IgnoresUnselectedMetadata) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -682,23 +692,23 @@ TEST_F(SubsetLoadBalancerTest, IgnoresUnselectedMetadata) {
 TEST_F(SubsetLoadBalancerTest, IgnoresHostsWithoutMetadata) {
   EXPECT_CALL(subset_info_, isEnabled()).WillRepeatedly(Return(true));
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
 
-  std::vector<HostSharedPtr> hosts;
+  HostVector hosts;
   hosts.emplace_back(makeTestHost(info_, "tcp://127.0.0.1:80"));
   hosts.emplace_back(makeHost("tcp://127.0.0.1:81", {{"version", "1.0"}}));
 
   host_set_.hosts_ = hosts;
-  host_set_.hosts_per_locality_ = std::vector<std::vector<HostSharedPtr>>({hosts});
+  host_set_.hosts_per_locality_ = makeHostsPerLocality({hosts});
 
   host_set_.healthy_hosts_ = host_set_.hosts_;
   host_set_.healthy_hosts_per_locality_ = host_set_.hosts_per_locality_;
 
   lb_.reset(new SubsetLoadBalancer(lb_type_, priority_set_, nullptr, stats_, runtime_, random_,
-                                   subset_info_, ring_hash_lb_config_));
+                                   subset_info_, ring_hash_lb_config_, common_config_));
 
   TestLoadBalancerContext context_version({{"version", "1.0"}});
 
@@ -725,12 +735,13 @@ TEST_P(SubsetLoadBalancerTest, LoadBalancerTypesRingHash) {
 
 TEST_F(SubsetLoadBalancerTest, ZoneAwareFallback) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
   std::vector<std::set<std::string>> subset_keys = {{"x"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
 
-  EXPECT_CALL(runtime_.snapshot_, getInteger("upstream.healthy_panic_threshold", 50))
+  common_config_.mutable_healthy_panic_threshold()->set_value(40);
+  EXPECT_CALL(runtime_.snapshot_, getInteger("upstream.healthy_panic_threshold", 40))
       .WillRepeatedly(Return(50));
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("upstream.zone_routing.enabled", 100))
       .WillRepeatedly(Return(true));
@@ -759,16 +770,16 @@ TEST_F(SubsetLoadBalancerTest, ZoneAwareFallback) {
                  }});
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][0], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][0], lb_->chooseHost(nullptr));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][1], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][1], lb_->chooseHost(nullptr));
 }
 
 TEST_P(SubsetLoadBalancerTest, ZoneAwareFallbackAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::ANY_ENDPOINT));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::ANY_ENDPOINT));
 
   std::vector<std::set<std::string>> subset_keys = {{"x"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -802,11 +813,11 @@ TEST_P(SubsetLoadBalancerTest, ZoneAwareFallbackAfterUpdate) {
                  }});
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][0], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][0], lb_->chooseHost(nullptr));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][1], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][1], lb_->chooseHost(nullptr));
 
   modifyHosts({makeHost("tcp://127.0.0.1:8000", {{"version", "1.0"}})}, {host_set_.hosts_[0]},
               Optional<uint32_t>(0));
@@ -815,16 +826,16 @@ TEST_P(SubsetLoadBalancerTest, ZoneAwareFallbackAfterUpdate) {
                    0);
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][0], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][0], lb_->chooseHost(nullptr));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][1], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][1], lb_->chooseHost(nullptr));
 }
 
 TEST_F(SubsetLoadBalancerTest, ZoneAwareFallbackDefaultSubset) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
 
   const ProtobufWkt::Struct default_subset = makeDefaultSubset({{"version", "default"}});
   EXPECT_CALL(subset_info_, defaultSubset()).WillRepeatedly(ReturnRef(default_subset));
@@ -869,16 +880,16 @@ TEST_F(SubsetLoadBalancerTest, ZoneAwareFallbackDefaultSubset) {
                  }});
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][1], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][1], lb_->chooseHost(nullptr));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][3], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][3], lb_->chooseHost(nullptr));
 }
 
 TEST_P(SubsetLoadBalancerTest, ZoneAwareFallbackDefaultSubsetAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::DEFAULT_SUBSET));
 
   const ProtobufWkt::Struct default_subset = makeDefaultSubset({{"version", "default"}});
   EXPECT_CALL(subset_info_, defaultSubset()).WillRepeatedly(ReturnRef(default_subset));
@@ -923,11 +934,11 @@ TEST_P(SubsetLoadBalancerTest, ZoneAwareFallbackDefaultSubsetAfterUpdate) {
                  }});
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][1], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][1], lb_->chooseHost(nullptr));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][3], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][3], lb_->chooseHost(nullptr));
 
   modifyHosts({makeHost("tcp://127.0.0.1:8001", {{"version", "default"}})}, {host_set_.hosts_[1]},
               Optional<uint32_t>(0));
@@ -936,16 +947,16 @@ TEST_P(SubsetLoadBalancerTest, ZoneAwareFallbackDefaultSubsetAfterUpdate) {
                    {makeHost("tcp://127.0.0.1:9001", {{"version", "default"}})}, 0);
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][1], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][1], lb_->chooseHost(nullptr));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][3], lb_->chooseHost(nullptr));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][3], lb_->chooseHost(nullptr));
 }
 
 TEST_F(SubsetLoadBalancerTest, ZoneAwareBalancesSubsets) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -989,16 +1000,16 @@ TEST_F(SubsetLoadBalancerTest, ZoneAwareBalancesSubsets) {
   TestLoadBalancerContext context({{"version", "1.1"}});
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][1], lb_->chooseHost(&context));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][1], lb_->chooseHost(&context));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][3], lb_->chooseHost(&context));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][3], lb_->chooseHost(&context));
 }
 
 TEST_P(SubsetLoadBalancerTest, ZoneAwareBalancesSubsetsAfterUpdate) {
   EXPECT_CALL(subset_info_, fallbackPolicy())
-      .WillRepeatedly(Return(envoy::api::v2::cluster::Cluster::LbSubsetConfig::NO_FALLBACK));
+      .WillRepeatedly(Return(envoy::api::v2::Cluster::LbSubsetConfig::NO_FALLBACK));
 
   std::vector<std::set<std::string>> subset_keys = {{"version"}};
   EXPECT_CALL(subset_info_, subsetKeys()).WillRepeatedly(ReturnRef(subset_keys));
@@ -1042,11 +1053,11 @@ TEST_P(SubsetLoadBalancerTest, ZoneAwareBalancesSubsetsAfterUpdate) {
   TestLoadBalancerContext context({{"version", "1.1"}});
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][1], lb_->chooseHost(&context));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][1], lb_->chooseHost(&context));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][3], lb_->chooseHost(&context));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][3], lb_->chooseHost(&context));
 
   modifyHosts({makeHost("tcp://127.0.0.1:8001", {{"version", "1.1"}})}, {host_set_.hosts_[1]},
               Optional<uint32_t>(0));
@@ -1055,11 +1066,11 @@ TEST_P(SubsetLoadBalancerTest, ZoneAwareBalancesSubsetsAfterUpdate) {
                    0);
 
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(100));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[0][1], lb_->chooseHost(&context));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[0][1], lb_->chooseHost(&context));
 
   // Force request out of small zone.
   EXPECT_CALL(random_, random()).WillOnce(Return(0)).WillOnce(Return(9999)).WillOnce(Return(2));
-  EXPECT_EQ(host_set_.healthy_hosts_per_locality_[1][3], lb_->chooseHost(&context));
+  EXPECT_EQ(host_set_.healthy_hosts_per_locality_->get()[1][3], lb_->chooseHost(&context));
 }
 
 INSTANTIATE_TEST_CASE_P(UpdateOrderings, SubsetLoadBalancerTest,

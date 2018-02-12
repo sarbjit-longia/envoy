@@ -21,6 +21,7 @@
 #include "common/http/conn_manager_impl.h"
 #include "common/http/date_provider_impl.h"
 #include "common/http/utility.h"
+#include "common/network/raw_buffer_socket.h"
 
 #include "server/config/network/http_connection_manager.h"
 
@@ -42,8 +43,8 @@ public:
 
   Http::Code runCallback(const std::string& path_and_query, Http::HeaderMap& response_headers,
                          Buffer::Instance& response);
-  const Network::ListenSocket& socket() override { return *socket_; }
-  Network::ListenSocket& mutable_socket() { return *socket_; }
+  const Network::Socket& socket() override { return *socket_; }
+  Network::Socket& mutable_socket() { return *socket_; }
   Network::ListenerConfig& listener() { return listener_; }
 
   // Server::Admin
@@ -85,6 +86,7 @@ public:
   const Optional<std::string>& userAgent() override { return user_agent_; }
   const Http::TracingConnectionManagerConfig* tracingConfig() override { return nullptr; }
   Http::ConnectionManagerListenerStats& listenerStats() override { return listener_.stats_; }
+  bool proxy100Continue() const override { return false; }
 
 private:
   /**
@@ -173,8 +175,10 @@ private:
 
     // Network::ListenerConfig
     Network::FilterChainFactory& filterChainFactory() override { return parent_; }
-    Network::ListenSocket& socket() override { return parent_.mutable_socket(); }
-    Ssl::ServerContext* defaultSslContext() override { return nullptr; }
+    Network::Socket& socket() override { return parent_.mutable_socket(); }
+    Network::TransportSocketFactory& transportSocketFactory() override {
+      return parent_.transport_socket_factory_;
+    }
     bool bindToPort() override { return true; }
     bool handOffRestoredDestinationConnections() const override { return false; }
     uint32_t perConnectionBufferLimitBytes() override { return 0; }
@@ -191,7 +195,8 @@ private:
   Server::Instance& server_;
   std::list<AccessLog::InstanceSharedPtr> access_logs_;
   const std::string profile_path_;
-  Network::ListenSocketPtr socket_;
+  Network::SocketPtr socket_;
+  Network::RawBufferSocketFactory transport_socket_factory_;
   Http::ConnectionManagerStats stats_;
   Http::ConnectionManagerTracingStats tracing_stats_;
   NullRouteConfigProvider route_config_provider_;

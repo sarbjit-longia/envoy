@@ -60,6 +60,7 @@ public:
   MOCK_METHOD1(addWriteFilter, void(WriteFilterSharedPtr filter));
   MOCK_METHOD1(addFilter, void(FilterSharedPtr filter));
   MOCK_METHOD1(addReadFilter, void(ReadFilterSharedPtr filter));
+  MOCK_METHOD1(enableHalfClose, void(bool enabled));
   MOCK_METHOD1(close, void(ConnectionCloseType type));
   MOCK_METHOD0(dispatcher, Event::Dispatcher&());
   MOCK_CONST_METHOD0(id, uint64_t());
@@ -75,11 +76,12 @@ public:
   MOCK_METHOD0(ssl, Ssl::Connection*());
   MOCK_CONST_METHOD0(ssl, const Ssl::Connection*());
   MOCK_CONST_METHOD0(state, State());
-  MOCK_METHOD1(write, void(Buffer::Instance& data));
+  MOCK_METHOD2(write, void(Buffer::Instance& data, bool end_stream));
   MOCK_METHOD1(setBufferLimits, void(uint32_t limit));
   MOCK_CONST_METHOD0(bufferLimit, uint32_t());
   MOCK_CONST_METHOD0(localAddressRestored, bool());
   MOCK_CONST_METHOD0(aboveHighWatermark, bool());
+  MOCK_CONST_METHOD0(socketOptions, const Network::ConnectionSocket::OptionsSharedPtr&());
 };
 
 /**
@@ -97,6 +99,7 @@ public:
   MOCK_METHOD1(addWriteFilter, void(WriteFilterSharedPtr filter));
   MOCK_METHOD1(addFilter, void(FilterSharedPtr filter));
   MOCK_METHOD1(addReadFilter, void(ReadFilterSharedPtr filter));
+  MOCK_METHOD1(enableHalfClose, void(bool enabled));
   MOCK_METHOD1(close, void(ConnectionCloseType type));
   MOCK_METHOD0(dispatcher, Event::Dispatcher&());
   MOCK_CONST_METHOD0(id, uint64_t());
@@ -112,11 +115,12 @@ public:
   MOCK_METHOD0(ssl, Ssl::Connection*());
   MOCK_CONST_METHOD0(ssl, const Ssl::Connection*());
   MOCK_CONST_METHOD0(state, State());
-  MOCK_METHOD1(write, void(Buffer::Instance& data));
+  MOCK_METHOD2(write, void(Buffer::Instance& data, bool end_stream));
   MOCK_METHOD1(setBufferLimits, void(uint32_t limit));
   MOCK_CONST_METHOD0(bufferLimit, uint32_t());
   MOCK_CONST_METHOD0(localAddressRestored, bool());
   MOCK_CONST_METHOD0(aboveHighWatermark, bool());
+  MOCK_CONST_METHOD0(socketOptions, const Network::ConnectionSocket::OptionsSharedPtr&());
 
   // Network::ClientConnection
   MOCK_METHOD0(connect, void());
@@ -162,7 +166,7 @@ public:
   MockReadFilter();
   ~MockReadFilter();
 
-  MOCK_METHOD1(onData, FilterStatus(Buffer::Instance& data));
+  MOCK_METHOD2(onData, FilterStatus(Buffer::Instance& data, bool end_stream));
   MOCK_METHOD0(onNewConnection, FilterStatus());
   MOCK_METHOD1(initializeReadFilterCallbacks, void(ReadFilterCallbacks& callbacks));
 
@@ -174,7 +178,7 @@ public:
   MockWriteFilter();
   ~MockWriteFilter();
 
-  MOCK_METHOD1(onWrite, FilterStatus(Buffer::Instance& data));
+  MOCK_METHOD2(onWrite, FilterStatus(Buffer::Instance& data, bool end_stream));
 };
 
 class MockFilter : public Filter {
@@ -182,9 +186,9 @@ public:
   MockFilter();
   ~MockFilter();
 
-  MOCK_METHOD1(onData, FilterStatus(Buffer::Instance& data));
+  MOCK_METHOD2(onData, FilterStatus(Buffer::Instance& data, bool end_stream));
   MOCK_METHOD0(onNewConnection, FilterStatus());
-  MOCK_METHOD1(onWrite, FilterStatus(Buffer::Instance& data));
+  MOCK_METHOD2(onWrite, FilterStatus(Buffer::Instance& data, bool end_stream));
   MOCK_METHOD1(initializeReadFilterCallbacks, void(ReadFilterCallbacks& callbacks));
 
   ReadFilterCallbacks* callbacks_{};
@@ -249,16 +253,28 @@ public:
   MOCK_METHOD1(createListenerFilterChain, bool(ListenerFilterManager& listener));
 };
 
-class MockListenSocket : public ListenSocket {
+class MockListenSocket : public Socket {
 public:
   MockListenSocket();
   ~MockListenSocket();
 
-  MOCK_CONST_METHOD0(localAddress, Address::InstanceConstSharedPtr());
-  MOCK_METHOD0(fd, int());
+  MOCK_CONST_METHOD0(localAddress, const Address::InstanceConstSharedPtr&());
+  MOCK_CONST_METHOD0(fd, int());
   MOCK_METHOD0(close, void());
+  MOCK_METHOD1(setOptions, void(const Socket::OptionsSharedPtr& options));
+  MOCK_CONST_METHOD0(options, const OptionsSharedPtr&());
 
   Address::InstanceConstSharedPtr local_address_;
+  OptionsSharedPtr options_;
+};
+
+class MockSocketOptions : public Socket::Options {
+public:
+  MockSocketOptions();
+  ~MockSocketOptions();
+
+  MOCK_CONST_METHOD1(setOptions, bool(Socket&));
+  MOCK_CONST_METHOD0(hashKey, uint32_t());
 };
 
 class MockConnectionSocket : public ConnectionSocket {
@@ -271,6 +287,8 @@ public:
   MOCK_CONST_METHOD0(localAddressRestored, bool());
   MOCK_CONST_METHOD0(remoteAddress, const Address::InstanceConstSharedPtr&());
   MOCK_METHOD1(setRemoteAddress, void(const Address::InstanceConstSharedPtr&));
+  MOCK_METHOD1(setOptions, void(const Network::ConnectionSocket::OptionsSharedPtr&));
+  MOCK_CONST_METHOD0(options, const Network::ConnectionSocket::OptionsSharedPtr&());
   MOCK_CONST_METHOD0(fd, int());
   MOCK_METHOD0(close, void());
 
@@ -283,8 +301,8 @@ public:
   ~MockListenerConfig();
 
   MOCK_METHOD0(filterChainFactory, FilterChainFactory&());
-  MOCK_METHOD0(socket, ListenSocket&());
-  MOCK_METHOD0(defaultSslContext, Ssl::ServerContext*());
+  MOCK_METHOD0(socket, Socket&());
+  MOCK_METHOD0(transportSocketFactory, TransportSocketFactory&());
   MOCK_METHOD0(bindToPort, bool());
   MOCK_CONST_METHOD0(handOffRestoredDestinationConnections, bool());
   MOCK_METHOD0(perConnectionBufferLimitBytes, uint32_t());
@@ -352,7 +370,7 @@ public:
   MOCK_METHOD0(canFlushClose, bool());
   MOCK_METHOD1(closeSocket, void(Network::ConnectionEvent event));
   MOCK_METHOD1(doRead, IoResult(Buffer::Instance& buffer));
-  MOCK_METHOD1(doWrite, IoResult(Buffer::Instance& buffer));
+  MOCK_METHOD2(doWrite, IoResult(Buffer::Instance& buffer, bool end_stream));
   MOCK_METHOD0(onConnected, void());
   MOCK_METHOD0(ssl, Ssl::Connection*());
   MOCK_CONST_METHOD0(ssl, const Ssl::Connection*());

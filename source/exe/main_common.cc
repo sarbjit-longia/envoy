@@ -11,6 +11,7 @@
 #include "server/drain_manager_impl.h"
 #include "server/hot_restart_nop_impl.h"
 #include "server/options_impl.h"
+#include "server/proto_descriptors.h"
 #include "server/server.h"
 #include "server/test_hooks.h"
 
@@ -31,7 +32,7 @@ public:
         // The global drain manager only triggers on listener modification, which effectively is
         // hot restart at the global level. The per-listener drain managers decide whether to
         // to include /healthcheck/fail status.
-        new DrainManagerImpl(server, envoy::api::v2::listener::Listener_DrainType_MODIFY_ONLY)};
+        new DrainManagerImpl(server, envoy::api::v2::Listener_DrainType_MODIFY_ONLY)};
   }
 
   Runtime::LoaderPtr createRuntime(Server::Instance& server,
@@ -65,6 +66,7 @@ int main_common(OptionsImpl& options) {
   Stats::HeapRawStatDataAllocator stats_allocator;
 #endif
 
+  RELEASE_ASSERT(Envoy::Server::validateProtoDescriptors());
   Event::Libevent::Global::initialize();
   Server::ProdComponentFactory component_factory;
   auto local_address = Network::Utility::getLocalAddress(options.localAddressIpVersion());

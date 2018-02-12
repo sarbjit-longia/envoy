@@ -11,6 +11,7 @@
 #include "common/api/api_impl.h"
 #include "common/buffer/buffer_impl.h"
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/http/header_map_impl.h"
 #include "common/http/headers.h"
 #include "common/network/utility.h"
@@ -21,8 +22,6 @@
 #include "test/test_common/network_utility.h"
 #include "test/test_common/printers.h"
 #include "test/test_common/utility.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 void BufferingStreamDecoder::decodeHeaders(Http::HeaderMapPtr&& headers, bool end_stream) {
@@ -66,7 +65,8 @@ IntegrationUtil::makeSingleRequest(uint32_t port, const std::string& method, con
       dispatcher->createClientConnection(
           Network::Utility::resolveUrl(fmt::format(
               "tcp://{}:{}", Network::Test::getLoopbackAddressUrlString(version), port)),
-          Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket()),
+          Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket(),
+          nullptr),
       host_description);
   BufferingStreamDecoderPtr response(new BufferingStreamDecoder([&]() -> void {
     client.close();
@@ -98,9 +98,9 @@ RawConnectionDriver::RawConnectionDriver(uint32_t port, Buffer::Instance& initia
   client_ = dispatcher_->createClientConnection(
       Network::Utility::resolveUrl(
           fmt::format("tcp://{}:{}", Network::Test::getLoopbackAddressUrlString(version), port)),
-      Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket());
+      Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket(), nullptr);
   client_->addReadFilter(Network::ReadFilterSharedPtr{new ForwardingFilter(*this, data_callback)});
-  client_->write(initial_data);
+  client_->write(initial_data, false);
   client_->connect();
 }
 
@@ -113,10 +113,11 @@ void RawConnectionDriver::close() { client_->close(Network::ConnectionCloseType:
 WaitForPayloadReader::WaitForPayloadReader(Event::Dispatcher& dispatcher)
     : dispatcher_(dispatcher) {}
 
-Network::FilterStatus WaitForPayloadReader::onData(Buffer::Instance& data) {
+Network::FilterStatus WaitForPayloadReader::onData(Buffer::Instance& data, bool end_stream) {
   data_.append(TestUtility::bufferToString(data));
   data.drain(data.length());
-  if (!data_to_wait_for_.empty() && data_.find(data_to_wait_for_) == 0) {
+  read_end_stream_ = end_stream;
+  if ((!data_to_wait_for_.empty() && data_.find(data_to_wait_for_) == 0) || end_stream) {
     data_to_wait_for_.clear();
     dispatcher_.exit();
   }

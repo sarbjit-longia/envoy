@@ -5,18 +5,17 @@
 #include <string>
 #include <vector>
 
+#include "common/common/fmt.h"
 #include "common/config/utility.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
 #include "common/protobuf/protobuf.h"
 #include "common/protobuf/utility.h"
 
-#include "fmt/format.h"
-
 namespace Envoy {
 namespace Upstream {
 
-LogicalDnsCluster::LogicalDnsCluster(const envoy::api::v2::cluster::Cluster& cluster,
+LogicalDnsCluster::LogicalDnsCluster(const envoy::api::v2::Cluster& cluster,
                                      Runtime::Loader& runtime, Stats::Store& stats,
                                      Ssl::ContextManager& ssl_context_manager,
                                      Network::DnsResolverSharedPtr dns_resolver,
@@ -35,13 +34,13 @@ LogicalDnsCluster::LogicalDnsCluster(const envoy::api::v2::cluster::Cluster& clu
   }
 
   switch (cluster.dns_lookup_family()) {
-  case envoy::api::v2::cluster::Cluster::V6_ONLY:
+  case envoy::api::v2::Cluster::V6_ONLY:
     dns_lookup_family_ = Network::DnsLookupFamily::V6Only;
     break;
-  case envoy::api::v2::cluster::Cluster::V4_ONLY:
+  case envoy::api::v2::Cluster::V4_ONLY:
     dns_lookup_family_ = Network::DnsLookupFamily::V4Only;
     break;
-  case envoy::api::v2::cluster::Cluster::AUTO:
+  case envoy::api::v2::Cluster::AUTO:
     dns_lookup_family_ = Network::DnsLookupFamily::Auto;
     break;
   default:
@@ -108,13 +107,14 @@ void LogicalDnsCluster::startResolve() {
                   new LogicalHost(info_, hostname_, Network::Utility::getIpv6AnyAddress(), *this));
               break;
             }
-            HostVectorSharedPtr new_hosts(new std::vector<HostSharedPtr>());
+            HostVectorSharedPtr new_hosts(new HostVector());
             new_hosts->emplace_back(logical_host_);
             // Given the current config, only EDS clusters support multiple priorities.
             ASSERT(priority_set_.hostSetsPerPriority().size() == 1);
             auto& first_host_set = priority_set_.getOrCreateHostSet(0);
             first_host_set.updateHosts(new_hosts, createHealthyHostList(*new_hosts),
-                                       empty_host_lists_, empty_host_lists_, *new_hosts, {});
+                                       HostsPerLocalityImpl::empty(), HostsPerLocalityImpl::empty(),
+                                       *new_hosts, {});
           }
         }
 
@@ -123,11 +123,13 @@ void LogicalDnsCluster::startResolve() {
       });
 }
 
-Upstream::Host::CreateConnectionData
-LogicalDnsCluster::LogicalHost::createConnection(Event::Dispatcher& dispatcher) const {
+Upstream::Host::CreateConnectionData LogicalDnsCluster::LogicalHost::createConnection(
+    Event::Dispatcher& dispatcher,
+    const Network::ConnectionSocket::OptionsSharedPtr& options) const {
   PerThreadCurrentHostData& data = parent_.tls_->getTyped<PerThreadCurrentHostData>();
   ASSERT(data.current_resolved_address_);
-  return {HostImpl::createConnection(dispatcher, *parent_.info_, data.current_resolved_address_),
+  return {HostImpl::createConnection(dispatcher, *parent_.info_, data.current_resolved_address_,
+                                     options),
           HostDescriptionConstSharedPtr{
               new RealHostDescription(data.current_resolved_address_, shared_from_this())}};
 }

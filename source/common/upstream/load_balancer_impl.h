@@ -4,7 +4,7 @@
 #include <set>
 #include <vector>
 
-#include "envoy/api/v2/cluster/cluster.pb.h"
+#include "envoy/api/v2/cds.pb.h"
 #include "envoy/runtime/runtime.h"
 #include "envoy/upstream/load_balancer.h"
 #include "envoy/upstream/upstream.h"
@@ -29,10 +29,11 @@ protected:
    * majority of hosts are unhealthy we'll be likely in a panic mode. In this case we'll route
    * requests to hosts regardless of whether they are healthy or not.
    */
-  static bool isGlobalPanic(const HostSet& host_set, Runtime::Loader& runtime);
+  bool isGlobalPanic(const HostSet& host_set);
 
   LoadBalancerBase(const PrioritySet& priority_set, ClusterStats& stats, Runtime::Loader& runtime,
-                   Runtime::RandomGenerator& random);
+                   Runtime::RandomGenerator& random,
+                   const envoy::api::v2::Cluster::CommonLbConfig& common_config);
 
   // Choose host set randomly, based on the per_priority_load_;
   const HostSet& chooseHostSet();
@@ -42,6 +43,7 @@ protected:
   ClusterStats& stats_;
   Runtime::Loader& runtime_;
   Runtime::RandomGenerator& random_;
+  const uint32_t default_healthy_panic_percent_;
   // The priority-ordered set of hosts to use for load balancing.
   const PrioritySet& priority_set_;
 
@@ -64,13 +66,14 @@ protected:
   // Both priority_set and local_priority_set if non-null must have at least one host set.
   ZoneAwareLoadBalancerBase(const PrioritySet& priority_set, const PrioritySet* local_priority_set,
                             ClusterStats& stats, Runtime::Loader& runtime,
-                            Runtime::RandomGenerator& random);
+                            Runtime::RandomGenerator& random,
+                            const envoy::api::v2::Cluster::CommonLbConfig& common_config);
   ~ZoneAwareLoadBalancerBase();
 
   /**
    * Pick the host list to use, doing zone aware routing when the hosts are sufficiently healthy.
    */
-  const std::vector<HostSharedPtr>& hostsToUse();
+  const HostVector& hostsToUse();
 
 private:
   enum class LocalityRoutingState {
@@ -98,16 +101,14 @@ private:
    * Try to select upstream hosts from the same locality.
    * @param host_set the last host set returned by chooseHostSet()
    */
-  const std::vector<HostSharedPtr>& tryChooseLocalLocalityHosts(const HostSet& host_set);
+  const HostVector& tryChooseLocalLocalityHosts(const HostSet& host_set);
 
   /**
    * @return (number of hosts in a given locality)/(total number of hosts) in ret param.
    * The result is stored as integer number and scaled by 10000 multiplier for better precision.
    * Caller is responsible for allocation/de-allocation of ret.
    */
-  void
-  calculateLocalityPercentage(const std::vector<std::vector<HostSharedPtr>>& hosts_per_locality,
-                              uint64_t* ret);
+  void calculateLocalityPercentage(const HostsPerLocality& hosts_per_locality, uint64_t* ret);
 
   /**
    * Regenerate locality aware routing structures for fast decisions on upstream locality selection.
@@ -142,8 +143,10 @@ class RoundRobinLoadBalancer : public LoadBalancer, ZoneAwareLoadBalancerBase {
 public:
   RoundRobinLoadBalancer(const PrioritySet& priority_set, const PrioritySet* local_priority_set,
                          ClusterStats& stats, Runtime::Loader& runtime,
-                         Runtime::RandomGenerator& random)
-      : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random) {}
+                         Runtime::RandomGenerator& random,
+                         const envoy::api::v2::Cluster::CommonLbConfig& common_config)
+      : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random,
+                                  common_config) {}
 
   // Upstream::LoadBalancer
   HostConstSharedPtr chooseHost(LoadBalancerContext* context) override;
@@ -169,7 +172,8 @@ class LeastRequestLoadBalancer : public LoadBalancer, ZoneAwareLoadBalancerBase 
 public:
   LeastRequestLoadBalancer(const PrioritySet& priority_set, const PrioritySet* local_priority_set,
                            ClusterStats& stats, Runtime::Loader& runtime,
-                           Runtime::RandomGenerator& random);
+                           Runtime::RandomGenerator& random,
+                           const envoy::api::v2::Cluster::CommonLbConfig& common_config);
 
   // Upstream::LoadBalancer
   HostConstSharedPtr chooseHost(LoadBalancerContext* context) override;
@@ -186,8 +190,10 @@ class RandomLoadBalancer : public LoadBalancer, ZoneAwareLoadBalancerBase {
 public:
   RandomLoadBalancer(const PrioritySet& priority_set, const PrioritySet* local_priority_set,
                      ClusterStats& stats, Runtime::Loader& runtime,
-                     Runtime::RandomGenerator& random)
-      : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random) {}
+                     Runtime::RandomGenerator& random,
+                     const envoy::api::v2::Cluster::CommonLbConfig& common_config)
+      : ZoneAwareLoadBalancerBase(priority_set, local_priority_set, stats, runtime, random,
+                                  common_config) {}
 
   // Upstream::LoadBalancer
   HostConstSharedPtr chooseHost(LoadBalancerContext* context) override;
@@ -198,7 +204,7 @@ public:
  */
 class LoadBalancerSubsetInfoImpl : public LoadBalancerSubsetInfo {
 public:
-  LoadBalancerSubsetInfoImpl(const envoy::api::v2::cluster::Cluster::LbSubsetConfig& subset_config)
+  LoadBalancerSubsetInfoImpl(const envoy::api::v2::Cluster::LbSubsetConfig& subset_config)
       : enabled_(!subset_config.subset_selectors().empty()),
         fallback_policy_(subset_config.fallback_policy()),
         default_subset_(subset_config.default_subset()) {
@@ -212,8 +218,7 @@ public:
 
   // Upstream::LoadBalancerSubsetInfo
   bool isEnabled() const override { return enabled_; }
-  envoy::api::v2::cluster::Cluster::LbSubsetConfig::LbSubsetFallbackPolicy
-  fallbackPolicy() const override {
+  envoy::api::v2::Cluster::LbSubsetConfig::LbSubsetFallbackPolicy fallbackPolicy() const override {
     return fallback_policy_;
   }
   const ProtobufWkt::Struct& defaultSubset() const override { return default_subset_; }
@@ -221,7 +226,7 @@ public:
 
 private:
   const bool enabled_;
-  const envoy::api::v2::cluster::Cluster::LbSubsetConfig::LbSubsetFallbackPolicy fallback_policy_;
+  const envoy::api::v2::Cluster::LbSubsetConfig::LbSubsetFallbackPolicy fallback_policy_;
   const ProtobufWkt::Struct default_subset_;
   std::vector<std::set<std::string>> subset_keys_;
 };

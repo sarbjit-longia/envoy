@@ -4,17 +4,16 @@
 #include <string>
 
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/config/utility.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Redis {
 
-ProxyFilterConfig::ProxyFilterConfig(const envoy::api::v2::filter::network::RedisProxy& config,
-                                     Upstream::ClusterManager& cm, Stats::Scope& scope,
-                                     const Network::DrainDecision& drain_decision,
-                                     Runtime::Loader& runtime)
+ProxyFilterConfig::ProxyFilterConfig(
+    const envoy::config::filter::network::redis_proxy::v2::RedisProxy& config,
+    Upstream::ClusterManager& cm, Stats::Scope& scope, const Network::DrainDecision& drain_decision,
+    Runtime::Loader& runtime)
     : drain_decision_(drain_decision), runtime_(runtime), cluster_name_(config.cluster()),
       stat_prefix_(fmt::format("redis.{}.", config.stat_prefix())),
       stats_(generateStats(stat_prefix_, scope)) {
@@ -85,7 +84,7 @@ void ProxyFilter::onResponse(PendingRequest& request, RespValuePtr&& value) {
   }
 
   if (encoder_buffer_.length() > 0) {
-    callbacks_->connection().write(encoder_buffer_);
+    callbacks_->connection().write(encoder_buffer_, false);
   }
 
   // Check for drain close only if there are no pending responses.
@@ -96,7 +95,7 @@ void ProxyFilter::onResponse(PendingRequest& request, RespValuePtr&& value) {
   }
 }
 
-Network::FilterStatus ProxyFilter::onData(Buffer::Instance& data) {
+Network::FilterStatus ProxyFilter::onData(Buffer::Instance& data, bool) {
   try {
     decoder_->decode(data);
     return Network::FilterStatus::Continue;
@@ -106,7 +105,7 @@ Network::FilterStatus ProxyFilter::onData(Buffer::Instance& data) {
     error.type(RespType::Error);
     error.asString() = "downstream protocol error";
     encoder_->encode(error, encoder_buffer_);
-    callbacks_->connection().write(encoder_buffer_);
+    callbacks_->connection().write(encoder_buffer_, false);
     callbacks_->connection().close(Network::ConnectionCloseType::NoFlush);
     return Network::FilterStatus::StopIteration;
   }

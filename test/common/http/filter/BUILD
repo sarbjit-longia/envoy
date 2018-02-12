@@ -55,6 +55,18 @@ envoy_cc_test(
 )
 
 envoy_cc_test(
+    name = "gzip_filter_test",
+    srcs = ["gzip_filter_test.cc"],
+    deps = [
+        "//source/common/compressor:compressor_lib",
+        "//source/common/decompressor:decompressor_lib",
+        "//source/common/http/filter:gzip_filter_lib",
+        "//source/common/protobuf:utility_lib",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
     name = "ip_tagging_filter_test",
     srcs = ["ip_tagging_filter_test.cc"],
     deps = [
@@ -87,5 +99,20 @@ envoy_cc_test(
         "//test/mocks/tracing:tracing_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "squash_filter_test",
+    srcs = ["squash_filter_test.cc"],
+    deps = [
+        "//include/envoy/event:dispatcher_interface",
+        "//source/common/http:header_map_lib",
+        "//source/common/http/filter:squash_filter_lib",
+        "//source/common/stats:stats_lib",
+        "//source/server/config/http:squash_lib",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/server:server_mocks",
+        "//test/mocks/upstream:upstream_mocks",
     ],
 )

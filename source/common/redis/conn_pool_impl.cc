@@ -11,7 +11,8 @@ namespace Envoy {
 namespace Redis {
 namespace ConnPool {
 
-ConfigImpl::ConfigImpl(const envoy::api::v2::filter::network::RedisProxy::ConnPoolSettings& config)
+ConfigImpl::ConfigImpl(
+    const envoy::config::filter::network::redis_proxy::v2::RedisProxy::ConnPoolSettings& config)
     : op_timeout_(PROTOBUF_GET_MS_REQUIRED(config, op_timeout)) {}
 
 ClientPtr ClientImpl::create(Upstream::HostConstSharedPtr host, Event::Dispatcher& dispatcher,
@@ -20,7 +21,7 @@ ClientPtr ClientImpl::create(Upstream::HostConstSharedPtr host, Event::Dispatche
 
   std::unique_ptr<ClientImpl> client(
       new ClientImpl(host, dispatcher, std::move(encoder), decoder_factory, config));
-  client->connection_ = host->createConnection(dispatcher).connection_;
+  client->connection_ = host->createConnection(dispatcher, nullptr).connection_;
   client->connection_->addConnectionCallbacks(*client);
   client->connection_->addReadFilter(Network::ReadFilterSharedPtr{new UpstreamReadFilter(*client)});
   client->connection_->connect();
@@ -54,7 +55,7 @@ PoolRequest* ClientImpl::makeRequest(const RespValue& request, PoolCallbacks& ca
 
   pending_requests_.emplace_back(*this, callbacks);
   encoder_->encode(request, encoder_buffer_);
-  connection_->write(encoder_buffer_);
+  connection_->write(encoder_buffer_, false);
 
   // Only boost the op timeout if:
   // - We are not already connected. Otherwise, we are governed by the connect timeout and the timer
@@ -185,7 +186,7 @@ ClientPtr ClientFactoryImpl::create(Upstream::HostConstSharedPtr host,
 InstanceImpl::InstanceImpl(
     const std::string& cluster_name, Upstream::ClusterManager& cm, ClientFactory& client_factory,
     ThreadLocal::SlotAllocator& tls,
-    const envoy::api::v2::filter::network::RedisProxy::ConnPoolSettings& config)
+    const envoy::config::filter::network::redis_proxy::v2::RedisProxy::ConnPoolSettings& config)
     : cm_(cm), client_factory_(client_factory), tls_(tls.allocateSlot()), config_(config) {
   tls_->set([this, cluster_name](
                 Event::Dispatcher& dispatcher) -> ThreadLocal::ThreadLocalObjectSharedPtr {

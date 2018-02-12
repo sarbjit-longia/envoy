@@ -1,5 +1,5 @@
+#include "envoy/api/v2/eds.pb.h"
 #include "envoy/api/v2/endpoint/load_report.pb.h"
-#include "envoy/service/discovery/v2/eds.pb.h"
 
 #include "common/stats/stats_impl.h"
 #include "common/upstream/load_stats_reporter.h"
@@ -65,7 +65,7 @@ public:
     load_stats_reporter_->onReceiveMessage(std::move(response));
   }
 
-  envoy::api::v2::Node node_;
+  envoy::api::v2::core::Node node_;
   NiceMock<Upstream::MockClusterManager> cm_;
   Event::MockDispatcher dispatcher_;
   Stats::IsolatedStoreImpl stats_store_;

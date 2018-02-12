@@ -5,9 +5,11 @@
 #include <memory>
 #include <string>
 
+#include "envoy/api/v2/rds.pb.validate.h"
 #include "envoy/api/v2/route/route.pb.validate.h"
 
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/config/rds_json.h"
 #include "common/config/subscription_factory.h"
 #include "common/config/utility.h"
@@ -15,20 +17,21 @@
 #include "common/router/config_impl.h"
 #include "common/router/rds_subscription.h"
 
-#include "fmt/format.h"
-
 namespace Envoy {
 namespace Router {
 
 RouteConfigProviderSharedPtr RouteConfigProviderUtil::create(
-    const envoy::api::v2::filter::network::HttpConnectionManager& config, Runtime::Loader& runtime,
-    Upstream::ClusterManager& cm, Stats::Scope& scope, const std::string& stat_prefix,
-    Init::Manager& init_manager, RouteConfigProviderManager& route_config_provider_manager) {
+    const envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager&
+        config,
+    Runtime::Loader& runtime, Upstream::ClusterManager& cm, Stats::Scope& scope,
+    const std::string& stat_prefix, Init::Manager& init_manager,
+    RouteConfigProviderManager& route_config_provider_manager) {
   switch (config.route_specifier_case()) {
-  case envoy::api::v2::filter::network::HttpConnectionManager::kRouteConfig:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      kRouteConfig:
     return RouteConfigProviderSharedPtr{
         new StaticRouteConfigProviderImpl(config.route_config(), runtime, cm)};
-  case envoy::api::v2::filter::network::HttpConnectionManager::kRds:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::kRds:
     return route_config_provider_manager.getRouteConfigProvider(config.rds(), cm, scope,
                                                                 stat_prefix, init_manager);
   default:
@@ -37,18 +40,18 @@ RouteConfigProviderSharedPtr RouteConfigProviderUtil::create(
 }
 
 StaticRouteConfigProviderImpl::StaticRouteConfigProviderImpl(
-    const envoy::api::v2::route::RouteConfiguration& config, Runtime::Loader& runtime,
+    const envoy::api::v2::RouteConfiguration& config, Runtime::Loader& runtime,
     Upstream::ClusterManager& cm)
     : config_(new ConfigImpl(config, runtime, cm, true)) {}
 
 // TODO(htuch): If support for multiple clusters is added per #1170 cluster_name_
 // initialization needs to be fixed.
 RdsRouteConfigProviderImpl::RdsRouteConfigProviderImpl(
-    const envoy::api::v2::filter::network::Rds& rds, const std::string& manager_identifier,
-    Runtime::Loader& runtime, Upstream::ClusterManager& cm, Event::Dispatcher& dispatcher,
-    Runtime::RandomGenerator& random, const LocalInfo::LocalInfo& local_info, Stats::Scope& scope,
-    const std::string& stat_prefix, ThreadLocal::SlotAllocator& tls,
-    RouteConfigProviderManagerImpl& route_config_provider_manager)
+    const envoy::config::filter::network::http_connection_manager::v2::Rds& rds,
+    const std::string& manager_identifier, Runtime::Loader& runtime, Upstream::ClusterManager& cm,
+    Event::Dispatcher& dispatcher, Runtime::RandomGenerator& random,
+    const LocalInfo::LocalInfo& local_info, Stats::Scope& scope, const std::string& stat_prefix,
+    ThreadLocal::SlotAllocator& tls, RouteConfigProviderManagerImpl& route_config_provider_manager)
     : runtime_(runtime), cm_(cm), tls_(tls.allocateSlot()),
       route_config_name_(rds.route_config_name()),
       scope_(scope.createScope(stat_prefix + "rds." + route_config_name_ + ".")),
@@ -57,32 +60,21 @@ RdsRouteConfigProviderImpl::RdsRouteConfigProviderImpl(
       manager_identifier_(manager_identifier) {
   ::Envoy::Config::Utility::checkLocalInfo("rds", local_info);
 
-  // TODO: dummy to force linking the gRPC service proto
-  envoy::service::discovery::v2::RdsDummy dummy;
-
   ConfigConstSharedPtr initial_config(new NullConfigImpl());
   tls_->set([initial_config](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr {
     return std::make_shared<ThreadLocalConfig>(initial_config);
   });
   subscription_ = Envoy::Config::SubscriptionFactory::subscriptionFromConfigSource<
-      envoy::api::v2::route::RouteConfiguration>(
+      envoy::api::v2::RouteConfiguration>(
       rds.config_source(), local_info.node(), dispatcher, cm, random, *scope_,
       [this, &rds, &dispatcher, &random,
-       &local_info]() -> Envoy::Config::Subscription<envoy::api::v2::route::RouteConfiguration>* {
+       &local_info]() -> Envoy::Config::Subscription<envoy::api::v2::RouteConfiguration>* {
         return new RdsSubscription(Envoy::Config::Utility::generateStats(*scope_), rds, cm_,
                                    dispatcher, random, local_info);
       },
-      "envoy.service.discovery.v2.RouteDiscoveryService.FetchRoutes",
-      "envoy.service.discovery.v2.RouteDiscoveryService.StreamRoutes");
-
-  // In V2 we use a Subscription model where the fetch can happen via gRPC, REST, or
-  // local filesystem. If the subscription happens via local filesystem (e.g xds_integration_test),
-  // then there is no actual RDS server, and hence no RDS cluster name.
-  if (rds.has_config_source() && rds.config_source().has_api_config_source()) {
-    cluster_name_ = rds.config_source().api_config_source().cluster_names()[0];
-  } else {
-    cluster_name_ = "NOT_USING_CLUSTER";
-  }
+      "envoy.api.v2.RouteDiscoveryService.FetchRoutes",
+      "envoy.api.v2.RouteDiscoveryService.StreamRoutes");
+  config_source_ = MessageUtil::getJsonStringFromMessage(rds.config_source(), true);
 }
 
 RdsRouteConfigProviderImpl::~RdsRouteConfigProviderImpl() {
@@ -178,8 +170,9 @@ RouteConfigProviderManagerImpl::rdsRouteConfigProviders() {
 };
 
 Router::RouteConfigProviderSharedPtr RouteConfigProviderManagerImpl::getRouteConfigProvider(
-    const envoy::api::v2::filter::network::Rds& rds, Upstream::ClusterManager& cm,
-    Stats::Scope& scope, const std::string& stat_prefix, Init::Manager& init_manager) {
+    const envoy::config::filter::network::http_connection_manager::v2::Rds& rds,
+    Upstream::ClusterManager& cm, Stats::Scope& scope, const std::string& stat_prefix,
+    Init::Manager& init_manager) {
 
   // RdsRouteConfigProviders are unique based on their serialized RDS config.
   // TODO(htuch): Full serialization here gives large IDs, could get away with a
@@ -252,7 +245,7 @@ Http::Code RouteConfigProviderManagerImpl::handlerRoutesLoop(
     response.add("{\n");
     response.add(fmt::format("\"version_info\": \"{}\",\n", provider->versionInfo()));
     response.add(fmt::format("\"route_config_name\": \"{}\",\n", provider->routeConfigName()));
-    response.add(fmt::format("\"cluster_name\": \"{}\",\n", provider->clusterName()));
+    response.add(fmt::format("\"config_source\": {},\n", provider->configSource()));
     response.add("\"route_table_dump\": ");
     response.add(fmt::format("{}\n", provider->configAsJson()));
     response.add("}\n");

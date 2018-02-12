@@ -49,6 +49,10 @@ if [[ "$1" == "bazel.release" ]]; then
   echo "bazel release build with tests..."
   bazel_release_binary_build
   echo "Testing..."
+  # We have various test binaries in the test directory such as tools, benchmarks, etc. We
+  # run a build pass to make sure they compile.
+  bazel --batch build ${BAZEL_BUILD_OPTIONS} -c opt //include/... //source/... //test/...
+  # Now run all of the tests which should already be compiled.
   bazel --batch test ${BAZEL_TEST_OPTIONS} -c opt //test/...
   exit 0
 elif [[ "$1" == "bazel.release.server_only" ]]; then
@@ -131,7 +135,6 @@ elif [[ "$1" == "bazel.coverage" ]]; then
   # directory. Wow.
   cd "${ENVOY_BUILD_DIR}"
   SRCDIR="${GCOVR_DIR}" "${ENVOY_SRCDIR}"/test/run_envoy_bazel_coverage.sh
-  rsync -av "${ENVOY_BUILD_DIR}"/bazel-envoy/generated/coverage/ "${ENVOY_COVERAGE_DIR}"
   exit 0
 elif [[ "$1" == "bazel.coverity" ]]; then
   # Coverity Scan version 2017.07 fails to analyze the entirely of the Envoy

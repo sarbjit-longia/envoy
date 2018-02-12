@@ -41,6 +41,7 @@ envoy_cc_library(
         "//source/server/config/http:grpc_http1_bridge_lib",
         "//source/server/config/http:grpc_json_transcoder_lib",
         "//source/server/config/http:grpc_web_lib",
+        "//source/server/config/http:gzip_lib",
         "//source/server/config/http:ip_tagging_lib",
         "//source/server/config/http:lua_lib",
         "//source/server/config/http:ratelimit_lib",
@@ -99,6 +100,7 @@ envoy_cc_library(
         "//source/common/common:compiler_requirements_lib",
         "//source/server:hot_restart_lib",
         "//source/server:hot_restart_nop_lib",
+        "//source/server:proto_descriptors_lib",
         "//source/server/config_validation:server_lib",
     ],
 )

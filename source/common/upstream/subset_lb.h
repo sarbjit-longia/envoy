@@ -20,11 +20,12 @@ namespace Upstream {
 
 class SubsetLoadBalancer : public LoadBalancer, Logger::Loggable<Logger::Id::upstream> {
 public:
-  SubsetLoadBalancer(
-      LoadBalancerType lb_type, PrioritySet& priority_set, const PrioritySet* local_priority_set,
-      ClusterStats& stats, Runtime::Loader& runtime, Runtime::RandomGenerator& random,
-      const LoadBalancerSubsetInfo& subsets,
-      const Optional<envoy::api::v2::cluster::Cluster::RingHashLbConfig>& lb_ring_hash_config);
+  SubsetLoadBalancer(LoadBalancerType lb_type, PrioritySet& priority_set,
+                     const PrioritySet* local_priority_set, ClusterStats& stats,
+                     Runtime::Loader& runtime, Runtime::RandomGenerator& random,
+                     const LoadBalancerSubsetInfo& subsets,
+                     const Optional<envoy::api::v2::Cluster::RingHashLbConfig>& lb_ring_hash_config,
+                     const envoy::api::v2::Cluster::CommonLbConfig& common_config);
 
   // Upstream::LoadBalancer
   HostConstSharedPtr chooseHost(LoadBalancerContext* context) override;
@@ -38,8 +39,8 @@ private:
     HostSubsetImpl(const HostSet& original_host_set)
         : HostSetImpl(original_host_set.priority()), original_host_set_(original_host_set) {}
 
-    void update(const std::vector<HostSharedPtr>& hosts_added,
-                const std::vector<HostSharedPtr>& hosts_removed, HostPredicate predicate);
+    void update(const HostVector& hosts_added, const HostVector& hosts_removed,
+                HostPredicate predicate);
 
     void triggerCallbacks() { HostSetImpl::runUpdateCallbacks({}, {}); }
     bool empty() { return hosts().empty(); }
@@ -53,8 +54,8 @@ private:
   public:
     PrioritySubsetImpl(const SubsetLoadBalancer& subset_lb, HostPredicate predicate);
 
-    void update(uint32_t priority, const std::vector<HostSharedPtr>& hosts_added,
-                const std::vector<HostSharedPtr>& hosts_removed, HostPredicate predicate);
+    void update(uint32_t priority, const HostVector& hosts_added, const HostVector& hosts_removed,
+                HostPredicate predicate);
 
     bool empty() { return empty_; }
 
@@ -106,13 +107,11 @@ private:
   };
 
   // Called by HostSet::MemberUpdateCb
-  void update(uint32_t priority, const std::vector<HostSharedPtr>& hosts_added,
-              const std::vector<HostSharedPtr>& hosts_removed);
+  void update(uint32_t priority, const HostVector& hosts_added, const HostVector& hosts_removed);
 
-  void updateFallbackSubset(uint32_t priority, const std::vector<HostSharedPtr>& hosts_added,
-                            const std::vector<HostSharedPtr>& hosts_removed);
-  void processSubsets(const std::vector<HostSharedPtr>& hosts_added,
-                      const std::vector<HostSharedPtr>& hosts_removed,
+  void updateFallbackSubset(uint32_t priority, const HostVector& hosts_added,
+                            const HostVector& hosts_removed);
+  void processSubsets(const HostVector& hosts_added, const HostVector& hosts_removed,
                       std::function<void(LbSubsetEntryPtr, HostPredicate, bool)> cb);
 
   HostConstSharedPtr tryChooseHostFromContext(LoadBalancerContext* context, bool& host_chosen);
@@ -129,12 +128,13 @@ private:
   SubsetMetadata extractSubsetMetadata(const std::set<std::string>& subset_keys, const Host& host);
 
   const LoadBalancerType lb_type_;
-  const Optional<envoy::api::v2::cluster::Cluster::RingHashLbConfig> lb_ring_hash_config_;
+  const Optional<envoy::api::v2::Cluster::RingHashLbConfig> lb_ring_hash_config_;
+  const envoy::api::v2::Cluster::CommonLbConfig common_config_;
   ClusterStats& stats_;
   Runtime::Loader& runtime_;
   Runtime::RandomGenerator& random_;
 
-  const envoy::api::v2::cluster::Cluster::LbSubsetConfig::LbSubsetFallbackPolicy fallback_policy_;
+  const envoy::api::v2::Cluster::LbSubsetConfig::LbSubsetFallbackPolicy fallback_policy_;
   const ProtobufWkt::Struct default_subset_;
   const std::vector<std::set<std::string>> subset_keys_;
 

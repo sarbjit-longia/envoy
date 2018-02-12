@@ -122,6 +122,19 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "gzip_lib",
+    srcs = ["gzip.cc"],
+    hdrs = ["gzip.h"],
+    deps = [
+        "//include/envoy/registry",
+        "//include/envoy/server:filter_config_interface",
+        "//source/common/config:well_known_names",
+        "//source/common/http/filter:gzip_filter_lib",
+        "//source/common/protobuf:utility_lib",
+    ],
+)
+
+envoy_cc_library(
     name = "grpc_web_lib",
     srcs = ["grpc_web.cc"],
     hdrs = ["grpc_web.h"],
@@ -186,7 +199,21 @@ envoy_cc_library(
         "//source/common/json:config_schemas_lib",
         "//source/common/router:router_lib",
         "//source/common/router:shadow_writer_lib",
-        "@envoy_api//envoy/api/v2/filter/http:router_cc",
+        "@envoy_api//envoy/config/filter/http/router/v2:router_cc",
+    ],
+)
+
+envoy_cc_library(
+    name = "squash_lib",
+    srcs = ["squash.cc"],
+    hdrs = ["squash.h"],
+    deps = [
+        "//include/envoy/registry",
+        "//include/envoy/server:filter_config_interface",
+        "//source/common/config:filter_json_lib",
+        "//source/common/config:well_known_names",
+        "//source/common/http/filter:squash_filter_lib",
+        "//source/common/protobuf:utility_lib",
     ],
 )
 

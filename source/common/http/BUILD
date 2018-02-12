@@ -225,9 +225,6 @@ envoy_cc_library(
     name = "utility_lib",
     srcs = ["utility.cc"],
     hdrs = ["utility.h"],
-    external_deps = [
-        "abseil_strings",
-    ],
     deps = [
         ":exception_lib",
         ":header_map_lib",
@@ -243,7 +240,7 @@ envoy_cc_library(
         "//source/common/json:json_loader_lib",
         "//source/common/network:utility_lib",
         "//source/common/protobuf:utility_lib",
-        "@envoy_api//envoy/api/v2:protocol_cc",
+        "@envoy_api//envoy/api/v2/core:protocol_cc",
     ],
 )
 

@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "envoy/access_log/access_log.h"
-#include "envoy/api/v2/filter/network/tcp_proxy.pb.h"
+#include "envoy/config/filter/network/tcp_proxy/v2/tcp_proxy.pb.h"
 #include "envoy/event/timer.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/filter.h"
@@ -67,7 +67,7 @@ public:
    */
   class SharedConfig {
   public:
-    SharedConfig(const envoy::api::v2::filter::network::TcpProxy& config,
+    SharedConfig(const envoy::config::filter::network::tcp_proxy::v2::TcpProxy& config,
                  Server::Configuration::FactoryContext& context);
     const TcpProxyStats& stats() { return stats_; }
     const Optional<std::chrono::milliseconds>& idleTimeout() { return idle_timeout_; }
@@ -85,7 +85,7 @@ public:
 
   typedef std::shared_ptr<SharedConfig> SharedConfigSharedPtr;
 
-  TcpProxyConfig(const envoy::api::v2::filter::network::TcpProxy& config,
+  TcpProxyConfig(const envoy::config::filter::network::tcp_proxy::v2::TcpProxy& config,
                  Server::Configuration::FactoryContext& context);
 
   /**
@@ -107,7 +107,8 @@ public:
 
 private:
   struct Route {
-    Route(const envoy::api::v2::filter::network::TcpProxy::DeprecatedV1::TCPRoute& config);
+    Route(const envoy::config::filter::network::tcp_proxy::v2::TcpProxy::DeprecatedV1::TCPRoute&
+              config);
 
     Network::Address::IpList source_ips_;
     Network::PortRangeList source_port_ranges_;
@@ -138,7 +139,7 @@ public:
   ~TcpProxy();
 
   // Network::ReadFilter
-  Network::FilterStatus onData(Buffer::Instance& data) override;
+  Network::FilterStatus onData(Buffer::Instance& data, bool end_stream) override;
   Network::FilterStatus onNewConnection() override { return initializeUpstreamConnection(); }
   void initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) override;
 
@@ -164,7 +165,7 @@ public:
     void onBelowWriteBufferLowWatermark() override;
 
     // Network::ReadFilter
-    Network::FilterStatus onData(Buffer::Instance& data) override;
+    Network::FilterStatus onData(Buffer::Instance& data, bool end_stream) override;
 
     void onBytesSent();
     void onIdleTimeout();
@@ -217,7 +218,7 @@ protected:
   Network::FilterStatus initializeUpstreamConnection();
   void onConnectTimeout();
   void onDownstreamEvent(Network::ConnectionEvent event);
-  void onUpstreamData(Buffer::Instance& data);
+  void onUpstreamData(Buffer::Instance& data, bool end_stream);
   void onUpstreamEvent(Network::ConnectionEvent event);
   void finalizeUpstreamConnectionStats();
   void closeUpstreamConnection();
@@ -254,6 +255,7 @@ public:
                   Stats::TimespanPtr&& connected_timespan);
 
   void onEvent(Network::ConnectionEvent event);
+  void onData(Buffer::Instance& data, bool end_stream);
   void onIdleTimeout();
   void onBytesSent();
   void cancelDrain();

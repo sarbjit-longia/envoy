@@ -2,19 +2,18 @@
 
 #include "envoy/api/v2/listener/listener.pb.h"
 
+#include "common/common/fmt.h"
 #include "common/config/lds_json.h"
 #include "common/config/utility.h"
 #include "common/http/headers.h"
 #include "common/json/config_schemas.h"
 #include "common/json/json_loader.h"
 
-#include "fmt/format.h"
-
 namespace Envoy {
 namespace Server {
 
 LdsSubscription::LdsSubscription(Config::SubscriptionStats stats,
-                                 const envoy::api::v2::ConfigSource& lds_config,
+                                 const envoy::api::v2::core::ConfigSource& lds_config,
                                  Upstream::ClusterManager& cm, Event::Dispatcher& dispatcher,
                                  Runtime::RandomGenerator& random,
                                  const LocalInfo::LocalInfo& local_info)
@@ -24,7 +23,7 @@ LdsSubscription::LdsSubscription(Config::SubscriptionStats stats,
   const auto& api_config_source = lds_config.api_config_source();
   UNREFERENCED_PARAMETER(lds_config);
   // If we are building an LdsSubscription, the ConfigSource should be REST_LEGACY.
-  ASSERT(api_config_source.api_type() == envoy::api::v2::ApiConfigSource::REST_LEGACY);
+  ASSERT(api_config_source.api_type() == envoy::api::v2::core::ApiConfigSource::REST_LEGACY);
   // TODO(htuch): Add support for multiple clusters, #1170.
   ASSERT(api_config_source.cluster_names().size() == 1);
   ASSERT(api_config_source.has_refresh_delay());
@@ -47,7 +46,7 @@ void LdsSubscription::parseResponse(const Http::Message& response) {
   response_json->validateSchema(Json::Schema::LDS_SCHEMA);
   std::vector<Json::ObjectSharedPtr> json_listeners = response_json->getObjectArray("listeners");
 
-  Protobuf::RepeatedPtrField<envoy::api::v2::listener::Listener> resources;
+  Protobuf::RepeatedPtrField<envoy::api::v2::Listener> resources;
   for (const Json::ObjectSharedPtr& json_listener : json_listeners) {
     Config::LdsJson::translateListener(*json_listener, *resources.Add());
   }

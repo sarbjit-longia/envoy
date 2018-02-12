@@ -5,10 +5,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <memory>
 #include <string>
 
 #include "envoy/common/exception.h"
 
+#include "common/common/fmt.h"
 #include "common/common/utility.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
@@ -17,7 +19,6 @@
 #include "test/test_common/network_utility.h"
 #include "test/test_common/utility.h"
 
-#include "fmt/format.h"
 #include "gtest/gtest.h"
 
 namespace Envoy {
@@ -125,6 +126,7 @@ TEST(Ipv4InstanceTest, SocketAddress) {
 
   Ipv4Instance address(&addr4);
   EXPECT_EQ("1.2.3.4:6502", address.asString());
+  EXPECT_EQ("1.2.3.4:6502", address.logicalName());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("1.2.3.4", address.ip()->addressAsString());
   EXPECT_EQ(6502U, address.ip()->port());
@@ -287,6 +289,17 @@ TEST(PipeInstanceTest, Basic) {
   EXPECT_EQ(nullptr, address.ip());
 }
 
+TEST(PipeInstanceTest, AbstractNamespace) {
+#if defined(__linux__)
+  PipeInstance address("@/foo");
+  EXPECT_EQ("@/foo", address.asString());
+  EXPECT_EQ(Type::Pipe, address.type());
+  EXPECT_EQ(nullptr, address.ip());
+#else
+  EXPECT_THROW(PipeInstance address("@/foo"), EnvoyException);
+#endif
+}
+
 TEST(AddressFromSockAddr, IPv4) {
   sockaddr_storage ss;
   auto& sin = reinterpret_cast<sockaddr_in&>(ss);
@@ -343,11 +356,15 @@ TEST(AddressFromSockAddr, Pipe) {
   socklen_t ss_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(sun.sun_path);
   EXPECT_EQ("/some/path", addressFromSockAddr(ss, ss_len)->asString());
 
-  // Empty path (== start of Abstract socket name) is invalid.
-  StringUtil::strlcpy(sun.sun_path, "", sizeof sun.sun_path);
-  EXPECT_THROW(
-      addressFromSockAddr(ss, offsetof(struct sockaddr_un, sun_path) + 1 + strlen(sun.sun_path)),
-      EnvoyException);
+  // Abstract socket namespace.
+  StringUtil::strlcpy(&sun.sun_path[1], "/some/abstract/path", sizeof sun.sun_path);
+  sun.sun_path[0] = '\0';
+  ss_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen("/some/abstract/path");
+#if defined(__linux__)
+  EXPECT_EQ("@/some/abstract/path", addressFromSockAddr(ss, ss_len)->asString());
+#else
+  EXPECT_THROW(addressFromSockAddr(ss, ss_len), EnvoyException);
+#endif
 }
 
 } // namespace Address

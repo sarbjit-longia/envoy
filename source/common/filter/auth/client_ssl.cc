@@ -8,19 +8,18 @@
 
 #include "common/common/assert.h"
 #include "common/common/enum_to_int.h"
+#include "common/common/fmt.h"
 #include "common/http/headers.h"
 #include "common/http/message_impl.h"
 #include "common/http/utility.h"
 #include "common/network/utility.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Filter {
 namespace Auth {
 namespace ClientSsl {
 
-Config::Config(const envoy::api::v2::filter::network::ClientSSLAuth& config,
+Config::Config(const envoy::config::filter::network::client_ssl_auth::v2::ClientSSLAuth& config,
                ThreadLocal::SlotAllocator& tls, Upstream::ClusterManager& cm,
                Event::Dispatcher& dispatcher, Stats::Scope& scope, Runtime::RandomGenerator& random)
     : RestApiFetcher(
@@ -39,10 +38,11 @@ Config::Config(const envoy::api::v2::filter::network::ClientSSLAuth& config,
       [empty](Event::Dispatcher&) -> ThreadLocal::ThreadLocalObjectSharedPtr { return empty; });
 }
 
-ConfigSharedPtr Config::create(const envoy::api::v2::filter::network::ClientSSLAuth& config,
-                               ThreadLocal::SlotAllocator& tls, Upstream::ClusterManager& cm,
-                               Event::Dispatcher& dispatcher, Stats::Scope& scope,
-                               Runtime::RandomGenerator& random) {
+ConfigSharedPtr
+Config::create(const envoy::config::filter::network::client_ssl_auth::v2::ClientSSLAuth& config,
+               ThreadLocal::SlotAllocator& tls, Upstream::ClusterManager& cm,
+               Event::Dispatcher& dispatcher, Stats::Scope& scope,
+               Runtime::RandomGenerator& random) {
   ConfigSharedPtr new_config(new Config(config, tls, cm, dispatcher, scope, random));
   new_config->initialize();
   return new_config;
@@ -81,7 +81,7 @@ void Config::createRequest(Http::Message& request) {
   request.headers().insertPath().value(Path);
 }
 
-Network::FilterStatus Instance::onData(Buffer::Instance&) {
+Network::FilterStatus Instance::onData(Buffer::Instance&, bool) {
   return Network::FilterStatus::Continue;
 }
 

@@ -3,16 +3,15 @@
 #include <cstdint>
 #include <string>
 
+#include "common/common/fmt.h"
 #include "common/tracing/http_tracer_impl.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace RateLimit {
 namespace TcpFilter {
 
-Config::Config(const envoy::api::v2::filter::network::RateLimit& config, Stats::Scope& scope,
-               Runtime::Loader& runtime)
+Config::Config(const envoy::config::filter::network::rate_limit::v2::RateLimit& config,
+               Stats::Scope& scope, Runtime::Loader& runtime)
     : domain_(config.domain()), stats_(generateStats(config.stat_prefix(), scope)),
       runtime_(runtime) {
 
@@ -31,7 +30,7 @@ InstanceStats Config::generateStats(const std::string& name, Stats::Scope& scope
                                    POOL_GAUGE_PREFIX(scope, final_prefix))};
 }
 
-Network::FilterStatus Instance::onData(Buffer::Instance&) {
+Network::FilterStatus Instance::onData(Buffer::Instance&, bool) {
   return status_ == Status::Calling ? Network::FilterStatus::StopIteration
                                     : Network::FilterStatus::Continue;
 }

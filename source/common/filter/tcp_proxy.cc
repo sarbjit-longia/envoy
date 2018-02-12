@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <string>
 
-#include "envoy/api/v2/filter/network/http_connection_manager.pb.h"
 #include "envoy/buffer/buffer.h"
+#include "envoy/config/filter/network/http_connection_manager/v2/http_connection_manager.pb.h"
 #include "envoy/event/dispatcher.h"
 #include "envoy/event/timer.h"
 #include "envoy/stats/stats.h"
@@ -14,14 +14,13 @@
 #include "common/access_log/access_log_impl.h"
 #include "common/common/assert.h"
 #include "common/common/empty_string.h"
-
-#include "fmt/format.h"
+#include "common/common/fmt.h"
 
 namespace Envoy {
 namespace Filter {
 
 TcpProxyConfig::Route::Route(
-    const envoy::api::v2::filter::network::TcpProxy::DeprecatedV1::TCPRoute& config) {
+    const envoy::config::filter::network::tcp_proxy::v2::TcpProxy::DeprecatedV1::TCPRoute& config) {
   cluster_name_ = config.cluster();
 
   source_ips_ = Network::Address::IpList(config.source_ip_list());
@@ -36,8 +35,9 @@ TcpProxyConfig::Route::Route(
   }
 }
 
-TcpProxyConfig::SharedConfig::SharedConfig(const envoy::api::v2::filter::network::TcpProxy& config,
-                                           Server::Configuration::FactoryContext& context)
+TcpProxyConfig::SharedConfig::SharedConfig(
+    const envoy::config::filter::network::tcp_proxy::v2::TcpProxy& config,
+    Server::Configuration::FactoryContext& context)
     : stats_scope_(context.scope().createScope(fmt::format("tcp.{}.", config.stat_prefix()))),
       stats_(generateStats(*stats_scope_)) {
   if (config.has_idle_timeout()) {
@@ -46,8 +46,9 @@ TcpProxyConfig::SharedConfig::SharedConfig(const envoy::api::v2::filter::network
   }
 }
 
-TcpProxyConfig::TcpProxyConfig(const envoy::api::v2::filter::network::TcpProxy& config,
-                               Server::Configuration::FactoryContext& context)
+TcpProxyConfig::TcpProxyConfig(
+    const envoy::config::filter::network::tcp_proxy::v2::TcpProxy& config,
+    Server::Configuration::FactoryContext& context)
     : max_connect_attempts_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, max_connect_attempts, 1)),
       upstream_drain_manager_slot_(context.threadLocal().allocateSlot()),
       shared_config_(std::make_shared<SharedConfig>(config, context)) {
@@ -57,8 +58,8 @@ TcpProxyConfig::TcpProxyConfig(const envoy::api::v2::filter::network::TcpProxy& 
   });
 
   if (config.has_deprecated_v1()) {
-    for (const envoy::api::v2::filter::network::TcpProxy::DeprecatedV1::TCPRoute& route_desc :
-         config.deprecated_v1().routes()) {
+    for (const envoy::config::filter::network::tcp_proxy::v2::TcpProxy::DeprecatedV1::TCPRoute&
+             route_desc : config.deprecated_v1().routes()) {
       if (!context.clusterManager().get(route_desc.cluster())) {
         throw EnvoyException(
             fmt::format("tcp proxy: unknown cluster '{}' in TCP route", route_desc.cluster()));
@@ -68,12 +69,12 @@ TcpProxyConfig::TcpProxyConfig(const envoy::api::v2::filter::network::TcpProxy& 
   }
 
   if (!config.cluster().empty()) {
-    envoy::api::v2::filter::network::TcpProxy::DeprecatedV1::TCPRoute default_route;
+    envoy::config::filter::network::tcp_proxy::v2::TcpProxy::DeprecatedV1::TCPRoute default_route;
     default_route.set_cluster(config.cluster());
     routes_.emplace_back(default_route);
   }
 
-  for (const envoy::api::v2::filter::accesslog::AccessLog& log_config : config.access_log()) {
+  for (const envoy::config::filter::accesslog::v2::AccessLog& log_config : config.access_log()) {
     access_logs_.emplace_back(AccessLog::AccessLogFactory::fromProto(log_config, context));
   }
 }
@@ -160,6 +161,7 @@ void TcpProxy::initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callb
   ENVOY_CONN_LOG(debug, "new tcp proxy session", read_callbacks_->connection());
 
   read_callbacks_->connection().addConnectionCallbacks(downstream_callbacks_);
+  read_callbacks_->connection().enableHalfClose(true);
   request_info_.downstream_local_address_ = read_callbacks_->connection().localAddress();
   request_info_.downstream_remote_address_ = read_callbacks_->connection().remoteAddress();
 
@@ -257,8 +259,12 @@ void TcpProxy::UpstreamCallbacks::onBelowWriteBufferLowWatermark() {
   }
 }
 
-Network::FilterStatus TcpProxy::UpstreamCallbacks::onData(Buffer::Instance& data) {
-  parent_->onUpstreamData(data);
+Network::FilterStatus TcpProxy::UpstreamCallbacks::onData(Buffer::Instance& data, bool end_stream) {
+  if (parent_) {
+    parent_->onUpstreamData(data, end_stream);
+  } else {
+    drainer_->onData(data, end_stream);
+  }
   return Network::FilterStatus::StopIteration;
 }
 
@@ -332,6 +338,7 @@ Network::FilterStatus TcpProxy::initializeUpstreamConnection() {
   cluster->resourceManager(Upstream::ResourcePriority::Default).connections().inc();
   upstream_connection_->addReadFilter(upstream_callbacks_);
   upstream_connection_->addConnectionCallbacks(*upstream_callbacks_);
+  upstream_connection_->enableHalfClose(true);
   upstream_connection_->setConnectionStats(
       {read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_rx_bytes_total_,
        read_callbacks_->upstreamHost()->cluster().stats().upstream_cx_rx_bytes_buffered_,
@@ -370,10 +377,11 @@ void TcpProxy::onConnectTimeout() {
   initializeUpstreamConnection();
 }
 
-Network::FilterStatus TcpProxy::onData(Buffer::Instance& data) {
-  ENVOY_CONN_LOG(trace, "received {} bytes", read_callbacks_->connection(), data.length());
+Network::FilterStatus TcpProxy::onData(Buffer::Instance& data, bool end_stream) {
+  ENVOY_CONN_LOG(trace, "downstream connection received {} bytes, end_stream={}",
+                 read_callbacks_->connection(), data.length(), end_stream);
   request_info_.bytes_received_ += data.length();
-  upstream_connection_->write(data);
+  upstream_connection_->write(data, end_stream);
   ASSERT(0 == data.length());
   resetIdleTimer(); // TODO(ggreenway) PERF: do we need to reset timer on both send and receive?
   return Network::FilterStatus::StopIteration;
@@ -402,9 +410,11 @@ void TcpProxy::onDownstreamEvent(Network::ConnectionEvent event) {
   }
 }
 
-void TcpProxy::onUpstreamData(Buffer::Instance& data) {
+void TcpProxy::onUpstreamData(Buffer::Instance& data, bool end_stream) {
+  ENVOY_CONN_LOG(trace, "upstream connection received {} bytes, end_stream={}",
+                 read_callbacks_->connection(), data.length(), end_stream);
   request_info_.bytes_sent_ += data.length();
-  read_callbacks_->connection().write(data);
+  read_callbacks_->connection().write(data, end_stream);
   ASSERT(0 == data.length());
   resetIdleTimer(); // TODO(ggreenway) PERF: do we need to reset timer on both send and receive?
 }
@@ -550,6 +560,16 @@ void TcpProxyDrainer::onEvent(Network::ConnectionEvent event) {
     config_->stats().upstream_flush_active_.dec();
     finalizeConnectionStats(*upstream_host_, *connected_timespan_);
     parent_.remove(*this, upstream_connection_->dispatcher());
+  }
+}
+
+void TcpProxyDrainer::onData(Buffer::Instance& data, bool) {
+  if (data.length() > 0) {
+    // There is no downstream connection to send any data to, but the upstream
+    // sent some data. Try to behave similar to what the kernel would do
+    // when it receives data on a connection where the application has closed
+    // the socket or ::shutdown(fd, SHUT_RD), and close/reset the connection.
+    cancelDrain();
   }
 }
 

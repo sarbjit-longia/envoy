@@ -36,14 +36,15 @@ envoy_cc_library(
         "//source/common/common:utility_lib",
         "//source/common/config:lds_json_lib",
         "//source/common/config:utility_lib",
+        "//source/common/ext_authz:ext_authz_lib",
         "//source/common/network:resolver_lib",
         "//source/common/network:utility_lib",
         "//source/common/protobuf:utility_lib",
         "//source/common/ratelimit:ratelimit_lib",
         "//source/common/tracing:http_tracer_lib",
+        "@envoy_api//envoy/api/v2:lds_cc",
         "@envoy_api//envoy/config/bootstrap/v2:bootstrap_cc",
         "@envoy_api//envoy/config/trace/v2:trace_cc",
-        "@envoy_api//envoy/service/discovery/v2:lds_cc",
     ],
 )
 
@@ -169,7 +170,7 @@ envoy_cc_library(
         "//source/common/config:subscription_factory_lib",
         "//source/common/config:utility_lib",
         "//source/common/protobuf:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:lds_cc",
+        "@envoy_api//envoy/api/v2:lds_cc",
     ],
 )
 
@@ -185,7 +186,7 @@ envoy_cc_library(
         "//source/common/http:rest_api_fetcher_lib",
         "//source/common/json:config_schemas_lib",
         "//source/common/json:json_validator_lib",
-        "@envoy_api//envoy/service/discovery/v2:lds_cc",
+        "@envoy_api//envoy/api/v2:lds_cc",
     ],
 )
 
@@ -199,6 +200,7 @@ envoy_cc_library(
         ":init_manager_lib",
         "//include/envoy/server:filter_config_interface",
         "//include/envoy/server:listener_manager_interface",
+        "//include/envoy/server:transport_socket_config_interface",
         "//include/envoy/server:worker_interface",
         "//source/common/config:utility_lib",
         "//source/common/config:well_known_names",
@@ -208,7 +210,26 @@ envoy_cc_library(
         "//source/common/ssl:context_config_lib",
         "//source/server/config/listener:original_dst_lib",
         "//source/server/config/listener:proxy_protocol_lib",
-        "@envoy_api//envoy/service/discovery/v2:lds_cc",
+        "@envoy_api//envoy/api/v2:lds_cc",
+    ],
+)
+
+envoy_cc_library(
+    name = "proto_descriptors_lib",
+    srcs = ["proto_descriptors.cc"],
+    hdrs = ["proto_descriptors.h"],
+    deps = [
+        "//source/common/config:protobuf_link_hacks",
+        "//source/common/protobuf",
+        "@envoy_api//envoy/api/v2:cds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:lds_cc",
+        "@envoy_api//envoy/api/v2:rds_cc",
+        "@envoy_api//envoy/service/accesslog/v2:als_cc",
+        "@envoy_api//envoy/service/discovery/v2:ads_cc",
+        "@envoy_api//envoy/service/discovery/v2:hds_cc",
+        "@envoy_api//envoy/service/metrics/v2:metrics_service_cc",
+        "@envoy_api//envoy/service/ratelimit/v2:rls_cc",
     ],
 )
 

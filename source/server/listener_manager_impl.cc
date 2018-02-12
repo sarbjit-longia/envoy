@@ -1,19 +1,18 @@
 #include "server/listener_manager_impl.h"
 
 #include "envoy/registry/registry.h"
+#include "envoy/server/transport_socket_config.h"
 
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/config/utility.h"
 #include "common/config/well_known_names.h"
 #include "common/network/listen_socket_impl.h"
 #include "common/network/utility.h"
 #include "common/protobuf/utility.h"
-#include "common/ssl/context_config_impl.h"
 
 #include "server/configuration_impl.h"
 #include "server/drain_manager_impl.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Server {
@@ -52,7 +51,7 @@ ProdListenerComponentFactory::createNetworkFilterFactoryList_(
 std::vector<Configuration::ListenerFilterFactoryCb>
 ProdListenerComponentFactory::createListenerFilterFactoryList_(
     const Protobuf::RepeatedPtrField<envoy::api::v2::listener::ListenerFilter>& filters,
-    Configuration::FactoryContext& context) {
+    Configuration::ListenerFactoryContext& context) {
   std::vector<Configuration::ListenerFilterFactoryCb> ret;
   for (ssize_t i = 0; i < filters.size(); i++) {
     const auto& proto_config = filters[i];
@@ -73,7 +72,7 @@ ProdListenerComponentFactory::createListenerFilterFactoryList_(
   return ret;
 }
 
-Network::ListenSocketSharedPtr
+Network::SocketSharedPtr
 ProdListenerComponentFactory::createListenSocket(Network::Address::InstanceConstSharedPtr address,
                                                  bool bind_to_port) {
   // For each listener config we share a single TcpListenSocket among all threaded listeners.
@@ -91,14 +90,14 @@ ProdListenerComponentFactory::createListenSocket(Network::Address::InstanceConst
   }
 }
 
-DrainManagerPtr ProdListenerComponentFactory::createDrainManager(
-    envoy::api::v2::listener::Listener::DrainType drain_type) {
+DrainManagerPtr
+ProdListenerComponentFactory::createDrainManager(envoy::api::v2::Listener::DrainType drain_type) {
   return DrainManagerPtr{new DrainManagerImpl(server_, drain_type)};
 }
 
-ListenerImpl::ListenerImpl(const envoy::api::v2::listener::Listener& config,
-                           ListenerManagerImpl& parent, const std::string& name, bool modifiable,
-                           bool workers_started, uint64_t hash)
+ListenerImpl::ListenerImpl(const envoy::api::v2::Listener& config, ListenerManagerImpl& parent,
+                           const std::string& name, bool modifiable, bool workers_started,
+                           uint64_t hash)
     : parent_(parent),
       // TODO(htuch): Validate not pipe when doing v2.
       address_(
@@ -117,7 +116,7 @@ ListenerImpl::ListenerImpl(const envoy::api::v2::listener::Listener& config,
       workers_started_(workers_started), hash_(hash),
       local_drain_manager_(parent.factory_.createDrainManager(config.drain_type())),
       metadata_(config.has_metadata() ? config.metadata()
-                                      : envoy::api::v2::Metadata::default_instance()) {
+                                      : envoy::api::v2::core::Metadata::default_instance()) {
   // TODO(htuch): Support multiple filter chains #1280, add constraint to ensure we have at least on
   // filter chain #1308.
   ASSERT(config.filter_chains().size() >= 1);
@@ -167,16 +166,41 @@ ListenerImpl::ListenerImpl(const envoy::api::v2::listener::Listener& config,
                                        "is currently not supported",
                                        address_->asString()));
     }
-    if (filter_chain.has_tls_context()) {
-      Ssl::ServerContextConfigImpl context_config(filter_chain.tls_context());
-      tls_contexts_.emplace_back(parent_.server_.sslContextManager().createSslServerContext(
-          name_, sni_domains, *listener_scope_, context_config, skip_context_update));
-      has_tls++;
-      if (filter_chain.tls_context().has_session_ticket_keys()) {
-        has_stk++;
+
+    // If the cluster doesn't have transport socke configured, override with default transport
+    // socket implementation based on tls_context. We copy by value first then override if
+    // neccessary.
+    auto transport_socket = filter_chain.transport_socket();
+    if (!filter_chain.has_transport_socket()) {
+      if (filter_chain.has_tls_context()) {
+        transport_socket.set_name(Config::TransportSocketNames::get().SSL);
+        MessageUtil::jsonConvert(filter_chain.tls_context(), *transport_socket.mutable_config());
+
+        has_tls++;
+        if (filter_chain.tls_context().has_session_ticket_keys()) {
+          has_stk++;
+        }
+      } else {
+        transport_socket.set_name(Config::TransportSocketNames::get().RAW_BUFFER);
       }
     }
+
+    auto& config_factory = Config::Utility::getAndCheckFactory<
+        Server::Configuration::DownstreamTransportSocketConfigFactory>(transport_socket.name());
+    ProtobufTypes::MessagePtr message =
+        Config::Utility::translateToFactoryConfig(transport_socket, config_factory);
+
+    // Each transport socket factory owns one SslServerContext, we need to store them all in a
+    // vector since Ssl::ContextManager doesn't own SslServerContext. While transportSocketFacotry()
+    // always returns the first element of transport_socket_factories_, other transport socket
+    // factories are needed when the default Ssl::ServerContext updates SSL context based on
+    // ClientHello. This behavior is a workaround for initial SNI support before the full SNI based
+    // filter chain match is implemented.
+    transport_socket_factories_.emplace_back(config_factory.createTransportSocketFactory(
+        name_, sni_domains, skip_context_update, *message, *this));
+    ASSERT(transport_socket_factories_.back() != nullptr);
   }
+  ASSERT(!transport_socket_factories_.empty());
 
   // TODO(PiotrSikora): allow filter chains with mixed use of Session Ticket Keys.
   // This doesn't work right now, because BoringSSL uses "session context" (initial SSL_CTX that
@@ -242,9 +266,21 @@ Init::Manager& ListenerImpl::initManager() {
   }
 }
 
-void ListenerImpl::setSocket(const Network::ListenSocketSharedPtr& socket) {
+void ListenerImpl::setSocket(const Network::SocketSharedPtr& socket) {
   ASSERT(!socket_);
   socket_ = socket;
+  // Server config validation sets nullptr sockets.
+  if (socket_ && listen_socket_options_) {
+    bool ok = listen_socket_options_->setOptions(*socket_);
+    const std::string message =
+        fmt::format("{}: Setting socket options {}", name_, ok ? "succeeded" : "failed");
+    if (!ok) {
+      ENVOY_LOG(warn, "{}", message);
+      throw EnvoyException(message);
+    } else {
+      ENVOY_LOG(debug, "{}", message);
+    }
+  }
 }
 
 ListenerManagerImpl::ListenerManagerImpl(Instance& server,
@@ -262,7 +298,7 @@ ListenerManagerStats ListenerManagerImpl::generateStats(Stats::Scope& scope) {
                                      POOL_GAUGE_PREFIX(scope, final_prefix))};
 }
 
-bool ListenerManagerImpl::addOrUpdateListener(const envoy::api::v2::listener::Listener& config,
+bool ListenerManagerImpl::addOrUpdateListener(const envoy::api::v2::Listener& config,
                                               bool modifiable) {
   std::string name;
   if (!config.name().empty()) {
@@ -344,7 +380,7 @@ bool ListenerManagerImpl::addOrUpdateListener(const envoy::api::v2::listener::Li
     // to see if there is a listener that has a socket bound to the address we are configured for.
     // This is an edge case, but may happen if a listener is removed and then added back with a same
     // or different name and intended to listen on the same address. This should work and not fail.
-    Network::ListenSocketSharedPtr draining_listener_socket;
+    Network::SocketSharedPtr draining_listener_socket;
     auto existing_draining_listener = std::find_if(
         draining_listeners_.cbegin(), draining_listeners_.cend(),
         [&new_listener](const DrainingListener& listener) {

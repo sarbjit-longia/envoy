@@ -80,7 +80,8 @@ protected:
   IntegrationCodecClientPtr makeHttpConnection(uint32_t port);
   IntegrationCodecClientPtr makeHttpConnection(Network::ClientConnectionPtr&& conn);
 
-  // sets downstream_protocol_ and alters the client protocol in the config_helper_
+  // Sets downstream_protocol_ and alters the HTTP connection manager codec type in the
+  // config_helper_.
   void setDownstreamProtocol(Http::CodecClient::Type type);
 
   // Sends |request_headers| and |request_body_size| bytes of body upstream.
@@ -144,12 +145,15 @@ protected:
   void testValidZeroLengthContent();
   void testInvalidContentLength();
   void testMultipleContentLengths();
+  void testComputedHealthCheck();
   void testDrainClose();
   void testRetry();
   void testRetryHittingBufferLimit();
   void testGrpcRetry();
   void testHittingDecoderFilterLimit();
   void testHittingEncoderFilterLimit();
+  void testEnvoyHandling100Continue();
+  void testEnvoyProxying100Continue(bool with_encoder_filter = false);
 
   // HTTP/2 client tests.
   void testDownstreamResetBeforeResponseComplete();

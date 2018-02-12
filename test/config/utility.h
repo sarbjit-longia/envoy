@@ -5,12 +5,12 @@
 #include <string>
 #include <vector>
 
-#include "envoy/api/v2/base.pb.h"
-#include "envoy/api/v2/cluster/cluster.pb.h"
-#include "envoy/api/v2/filter/network/http_connection_manager.pb.h"
-#include "envoy/api/v2/protocol.pb.h"
+#include "envoy/api/v2/cds.pb.h"
+#include "envoy/api/v2/core/base.pb.h"
+#include "envoy/api/v2/core/protocol.pb.h"
 #include "envoy/api/v2/route/route.pb.h"
 #include "envoy/config/bootstrap/v2/bootstrap.pb.h"
+#include "envoy/config/filter/network/http_connection_manager/v2/http_connection_manager.pb.h"
 #include "envoy/http/codes.h"
 
 #include "common/network/address_impl.h"
@@ -28,7 +28,8 @@ public:
                const std::string& config = HTTP_PROXY_CONFIG);
 
   typedef std::function<void(envoy::config::bootstrap::v2::Bootstrap&)> ConfigModifierFunction;
-  typedef std::function<void(envoy::api::v2::filter::network::HttpConnectionManager&)>
+  typedef std::function<void(
+      envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager&)>
       HttpModifierFunction;
 
   // A basic configuration (admin port, cluster_0, one listener) with no network filters.
@@ -43,6 +44,8 @@ public:
   static const std::string DEFAULT_BUFFER_FILTER;
   // a string for a health check filter which can be used with addFilter()
   static const std::string DEFAULT_HEALTH_CHECK_FILTER;
+  // a string for a squash filter which can be used with addFilter()
+  static const std::string DEFAULT_SQUASH_FILTER;
 
   // Run the final config modifiers, and then set the upstream ports based on upstream connections.
   // This is the last operation run on |bootstrap_| before it is handed to Envoy.
@@ -73,10 +76,15 @@ public:
   void addFilter(const std::string& filter_yaml);
 
   // Sets the client codec to the specified type.
-  void setClientCodec(envoy::api::v2::filter::network::HttpConnectionManager::CodecType type);
+  void setClientCodec(
+      envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::CodecType
+          type);
 
   // Add the default SSL configuration.
   void addSslConfig();
+
+  // Renames the first listener to the name specified.
+  void renameListener(const std::string& name);
 
   // Allows callers to do their own modification to |bootstrap_| which will be
   // applied just before ports are modified in finalize().
@@ -91,11 +99,13 @@ public:
 
 private:
   // Load the first HCM struct from the first listener into a parsed proto.
-  bool loadHttpConnectionManager(envoy::api::v2::filter::network::HttpConnectionManager& hcm);
+  bool loadHttpConnectionManager(
+      envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager& hcm);
   // Stick the contents of the procided HCM proto and stuff them into the first HCM
   // struct of the first listener.
-  void
-  storeHttpConnectionManager(const envoy::api::v2::filter::network::HttpConnectionManager& hcm);
+  void storeHttpConnectionManager(
+      const envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager&
+          hcm);
 
   // Snags the first filter from the first filter chain from the first listener.
   envoy::api::v2::listener::Filter* getFilterFromListener();

@@ -12,6 +12,7 @@
 #include "envoy/access_log/access_log.h"
 #include "envoy/api/v2/cluster/outlier_detection.pb.h"
 #include "envoy/event/timer.h"
+#include "envoy/http/codes.h"
 #include "envoy/runtime/runtime.h"
 #include "envoy/upstream/outlier_detection.h"
 #include "envoy/upstream/upstream.h"
@@ -44,7 +45,7 @@ private:
 class DetectorImplFactory {
 public:
   static DetectorSharedPtr createForCluster(Cluster& cluster,
-                                            const envoy::api::v2::cluster::Cluster& cluster_config,
+                                            const envoy::api::v2::Cluster& cluster_config,
                                             Event::Dispatcher& dispatcher, Runtime::Loader& runtime,
                                             EventLoggerSharedPtr event_logger);
 };
@@ -116,6 +117,7 @@ public:
   void successRate(double new_success_rate) { success_rate_ = new_success_rate; }
   void resetConsecutive5xx() { consecutive_5xx_ = 0; }
   void resetConsecutiveGatewayFailure() { consecutive_gateway_failure_ = 0; }
+  static Http::Code resultToHttpCode(Result result);
 
   // Upstream::Outlier::DetectorHostMonitor
   uint32_t numEjections() override { return num_ejections_; }

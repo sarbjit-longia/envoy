@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-#include "envoy/api/v2/filter/network/redis_proxy.pb.h"
+#include "envoy/config/filter/network/redis_proxy/v2/redis_proxy.pb.h"
 #include "envoy/network/drain_decision.h"
 #include "envoy/network/filter.h"
 #include "envoy/redis/codec.h"
@@ -46,7 +46,7 @@ struct ProxyStats {
  */
 class ProxyFilterConfig {
 public:
-  ProxyFilterConfig(const envoy::api::v2::filter::network::RedisProxy& config,
+  ProxyFilterConfig(const envoy::config::filter::network::redis_proxy::v2::RedisProxy& config,
                     Upstream::ClusterManager& cm, Stats::Scope& scope,
                     const Network::DrainDecision& drain_decision, Runtime::Loader& runtime);
 
@@ -77,7 +77,7 @@ public:
 
   // Network::ReadFilter
   void initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) override;
-  Network::FilterStatus onData(Buffer::Instance& data) override;
+  Network::FilterStatus onData(Buffer::Instance& data, bool end_stream) override;
   Network::FilterStatus onNewConnection() override { return Network::FilterStatus::Continue; }
 
   // Network::ConnectionCallbacks

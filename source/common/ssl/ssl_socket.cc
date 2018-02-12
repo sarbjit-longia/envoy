@@ -5,6 +5,7 @@
 #include "common/common/hex.h"
 #include "common/http/headers.h"
 
+#include "absl/strings/str_replace.h"
 #include "openssl/err.h"
 #include "openssl/x509v3.h"
 
@@ -36,11 +37,14 @@ Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
   if (!handshake_complete_) {
     PostIoAction action = doHandshake();
     if (action == PostIoAction::Close || !handshake_complete_) {
-      return {action, 0};
+      // end_stream is false because either a hard error occurred (action == Close) or
+      // the handhshake isn't complete, so a half-close cannot occur yet.
+      return {action, 0, false};
     }
   }
 
   bool keep_reading = true;
+  bool end_stream = false;
   PostIoAction action = PostIoAction::KeepOpen;
   uint64_t bytes_read = 0;
   while (keep_reading) {
@@ -61,6 +65,9 @@ Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
         int err = SSL_get_error(ssl_.get(), rc);
         switch (err) {
         case SSL_ERROR_WANT_READ:
+          break;
+        case SSL_ERROR_ZERO_RETURN:
+          end_stream = true;
           break;
         case SSL_ERROR_WANT_WRITE:
         // Renegotiation has started. We don't handle renegotiation so just fall through.
@@ -83,7 +90,7 @@ Network::IoResult SslSocket::doRead(Buffer::Instance& read_buffer) {
     }
   }
 
-  return {action, bytes_read};
+  return {action, bytes_read, end_stream};
 }
 
 PostIoAction SslSocket::doHandshake() {
@@ -137,11 +144,12 @@ void SslSocket::drainErrorQueue() {
   }
 }
 
-Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer) {
+Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer, bool end_stream) {
+  ASSERT(!shutdown_sent_ || write_buffer.length() == 0);
   if (!handshake_complete_) {
     PostIoAction action = doHandshake();
     if (action == PostIoAction::Close || !handshake_complete_) {
-      return {action, 0};
+      return {action, 0, false};
     }
   }
 
@@ -181,7 +189,7 @@ Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer) {
         // Renegotiation has started. We don't handle renegotiation so just fall through.
         default:
           drainErrorQueue();
-          return {PostIoAction::Close, total_bytes_written};
+          return {PostIoAction::Close, total_bytes_written, false};
         }
 
         break;
@@ -195,10 +203,25 @@ Network::IoResult SslSocket::doWrite(Buffer::Instance& write_buffer) {
     }
   }
 
-  return {PostIoAction::KeepOpen, total_bytes_written};
+  if (total_bytes_written == original_buffer_length && end_stream) {
+    shutdownSsl();
+  }
+
+  return {PostIoAction::KeepOpen, total_bytes_written, false};
 }
 
 void SslSocket::onConnected() { ASSERT(!handshake_complete_); }
+
+void SslSocket::shutdownSsl() {
+  ASSERT(handshake_complete_);
+  if (!shutdown_sent_ && callbacks_->connection().state() != Network::Connection::State::Closed) {
+    int rc = SSL_shutdown(ssl_.get());
+    ENVOY_CONN_LOG(debug, "SSL shutdown: rc={}", callbacks_->connection(), rc);
+    UNREFERENCED_PARAMETER(rc);
+    drainErrorQueue();
+    shutdown_sent_ = true;
+  }
+}
 
 bool SslSocket::peerCertificatePresented() const {
   bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl_.get()));
@@ -214,17 +237,44 @@ std::string SslSocket::uriSanLocalCertificate() {
   return getUriSanFromCertificate(cert);
 }
 
-std::string SslSocket::sha256PeerCertificateDigest() {
+const std::string& SslSocket::sha256PeerCertificateDigest() const {
+  if (!cached_sha_256_peer_certificate_digest_.empty()) {
+    return cached_sha_256_peer_certificate_digest_;
+  }
   bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl_.get()));
   if (!cert) {
-    return "";
+    ASSERT(cached_sha_256_peer_certificate_digest_.empty());
+    return cached_sha_256_peer_certificate_digest_;
   }
 
   std::vector<uint8_t> computed_hash(SHA256_DIGEST_LENGTH);
   unsigned int n;
   X509_digest(cert.get(), EVP_sha256(), computed_hash.data(), &n);
   RELEASE_ASSERT(n == computed_hash.size());
-  return Hex::encode(computed_hash);
+  cached_sha_256_peer_certificate_digest_ = Hex::encode(computed_hash);
+  return cached_sha_256_peer_certificate_digest_;
+}
+
+const std::string& SslSocket::urlEncodedPemEncodedPeerCertificate() const {
+  if (!cached_url_encoded_pem_encoded_peer_certificate_.empty()) {
+    return cached_url_encoded_pem_encoded_peer_certificate_;
+  }
+  bssl::UniquePtr<X509> cert(SSL_get_peer_certificate(ssl_.get()));
+  if (!cert) {
+    ASSERT(cached_url_encoded_pem_encoded_peer_certificate_.empty());
+    return cached_url_encoded_pem_encoded_peer_certificate_;
+  }
+
+  bssl::UniquePtr<BIO> buf(BIO_new(BIO_s_mem()));
+  RELEASE_ASSERT(buf != nullptr);
+  RELEASE_ASSERT(PEM_write_bio_X509(buf.get(), cert.get()) == 1);
+  const uint8_t* output;
+  size_t length;
+  RELEASE_ASSERT(BIO_mem_contents(buf.get(), &output, &length) == 1);
+  absl::string_view pem(reinterpret_cast<const char*>(output), length);
+  cached_url_encoded_pem_encoded_peer_certificate_ = absl::StrReplaceAll(
+      pem, {{"\n", "%0A"}, {" ", "%20"}, {"+", "%2B"}, {"/", "%2F"}, {"=", "%3D"}});
+  return cached_url_encoded_pem_encoded_peer_certificate_;
 }
 
 std::string SslSocket::uriSanPeerCertificate() {
@@ -264,15 +314,11 @@ std::string SslSocket::getUriSanFromCertificate(X509* cert) {
 }
 
 void SslSocket::closeSocket(Network::ConnectionEvent) {
-  if (handshake_complete_ &&
-      callbacks_->connection().state() != Network::Connection::State::Closed) {
-    // Attempt to send a shutdown before closing the socket. It's possible this won't go out if
-    // there is no room on the socket. We can extend the state machine to handle this at some point
-    // if needed.
-    int rc = SSL_shutdown(ssl_.get());
-    ENVOY_CONN_LOG(debug, "SSL shutdown: rc={}", callbacks_->connection(), rc);
-    UNREFERENCED_PARAMETER(rc);
-    drainErrorQueue();
+  // Attempt to send a shutdown before closing the socket. It's possible this won't go out if
+  // there is no room on the socket. We can extend the state machine to handle this at some point
+  // if needed.
+  if (handshake_complete_) {
+    shutdownSsl();
   }
 }
 
@@ -328,6 +374,21 @@ Network::TransportSocketPtr ClientSslSocketFactory::createTransportSocket() cons
 }
 
 bool ClientSslSocketFactory::implementsSecureTransport() const { return true; }
+
+ServerSslSocketFactory::ServerSslSocketFactory(const ServerContextConfig& config,
+                                               const std::string& listener_name,
+                                               const std::vector<std::string>& server_names,
+                                               bool skip_context_update,
+                                               Ssl::ContextManager& manager,
+                                               Stats::Scope& stats_scope)
+    : ssl_ctx_(manager.createSslServerContext(listener_name, server_names, stats_scope, config,
+                                              skip_context_update)) {}
+
+Network::TransportSocketPtr ServerSslSocketFactory::createTransportSocket() const {
+  return std::make_unique<Ssl::SslSocket>(*ssl_ctx_, Ssl::InitialState::Server);
+}
+
+bool ServerSslSocketFactory::implementsSecureTransport() const { return true; }
 
 } // namespace Ssl
 } // namespace Envoy

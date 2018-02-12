@@ -7,6 +7,7 @@
 #include "common/filter/listener/proxy_protocol.h"
 #include "common/network/listen_socket_impl.h"
 #include "common/network/listener_impl.h"
+#include "common/network/raw_buffer_socket.h"
 #include "common/network/utility.h"
 #include "common/stats/stats_impl.h"
 
@@ -44,14 +45,16 @@ public:
     connection_handler_->addListener(*this);
     conn_ = dispatcher_.createClientConnection(socket_.localAddress(),
                                                Network::Address::InstanceConstSharedPtr(),
-                                               Network::Test::createRawBufferSocket());
+                                               Network::Test::createRawBufferSocket(), nullptr);
     conn_->addConnectionCallbacks(connection_callbacks_);
   }
 
   // Listener
   Network::FilterChainFactory& filterChainFactory() override { return factory_; }
-  Network::ListenSocket& socket() override { return socket_; }
-  Ssl::ServerContext* defaultSslContext() override { return nullptr; }
+  Network::Socket& socket() override { return socket_; }
+  Network::TransportSocketFactory& transportSocketFactory() override {
+    return transport_socket_factory_;
+  }
   bool bindToPort() override { return true; }
   bool handOffRestoredDestinationConnections() const override { return false; }
   uint32_t perConnectionBufferLimitBytes() override { return 0; }
@@ -86,13 +89,13 @@ public:
 
   void write(const std::string& s) {
     Buffer::OwnedImpl buf(s);
-    conn_->write(buf);
+    conn_->write(buf, false);
   }
 
   void expectData(std::string expected) {
     EXPECT_CALL(*read_filter_, onNewConnection());
-    EXPECT_CALL(*read_filter_, onData(_))
-        .WillOnce(Invoke([&](Buffer::Instance& buffer) -> FilterStatus {
+    EXPECT_CALL(*read_filter_, onData(_, _))
+        .WillOnce(Invoke([&](Buffer::Instance& buffer, bool) -> FilterStatus {
           EXPECT_EQ(TestUtility::bufferToString(buffer), expected);
           buffer.drain(expected.length());
           dispatcher_.exit();
@@ -123,6 +126,7 @@ public:
 
   Event::DispatcherImpl dispatcher_;
   TcpListenSocket socket_;
+  Network::RawBufferSocketFactory transport_socket_factory_;
   Stats::IsolatedStoreImpl stats_store_;
   Network::ConnectionHandlerPtr connection_handler_;
   Network::MockFilterChainFactory factory_;
@@ -322,7 +326,7 @@ public:
     connection_handler_->addListener(*this);
     conn_ = dispatcher_.createClientConnection(local_dst_address_,
                                                Network::Address::InstanceConstSharedPtr(),
-                                               Network::Test::createRawBufferSocket());
+                                               Network::Test::createRawBufferSocket(), nullptr);
     conn_->addConnectionCallbacks(connection_callbacks_);
 
     EXPECT_CALL(factory_, createListenerFilterChain(_))
@@ -337,8 +341,8 @@ public:
 
   // Network::ListenerConfig
   Network::FilterChainFactory& filterChainFactory() override { return factory_; }
-  Network::ListenSocket& socket() override { return socket_; }
-  Ssl::ServerContext* defaultSslContext() override { return nullptr; }
+  Network::Socket& socket() override { return socket_; }
+  TransportSocketFactory& transportSocketFactory() override { return transport_socket_factory_; }
   bool bindToPort() override { return true; }
   bool handOffRestoredDestinationConnections() const override { return false; }
   uint32_t perConnectionBufferLimitBytes() override { return 0; }
@@ -363,13 +367,13 @@ public:
 
   void write(const std::string& s) {
     Buffer::OwnedImpl buf(s);
-    conn_->write(buf);
+    conn_->write(buf, false);
   }
 
   void expectData(std::string expected) {
     EXPECT_CALL(*read_filter_, onNewConnection());
-    EXPECT_CALL(*read_filter_, onData(_))
-        .WillOnce(Invoke([&](Buffer::Instance& buffer) -> FilterStatus {
+    EXPECT_CALL(*read_filter_, onData(_, _))
+        .WillOnce(Invoke([&](Buffer::Instance& buffer, bool) -> FilterStatus {
           EXPECT_EQ(TestUtility::bufferToString(buffer), expected);
           buffer.drain(expected.length());
           dispatcher_.exit();
@@ -390,6 +394,7 @@ public:
 
   Event::DispatcherImpl dispatcher_;
   TcpListenSocket socket_;
+  Network::RawBufferSocketFactory transport_socket_factory_;
   Network::Address::InstanceConstSharedPtr local_dst_address_;
   Stats::IsolatedStoreImpl stats_store_;
   Network::ConnectionHandlerPtr connection_handler_;

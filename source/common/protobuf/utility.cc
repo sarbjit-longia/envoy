@@ -1,13 +1,27 @@
 #include "common/protobuf/utility.h"
 
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/filesystem/filesystem_impl.h"
 #include "common/json/json_loader.h"
 #include "common/protobuf/protobuf.h"
 
-#include "fmt/format.h"
-
 namespace Envoy {
+namespace ProtobufPercentHelper {
+
+uint64_t checkAndReturnDefault(uint64_t default_value, uint64_t max_value) {
+  ASSERT(default_value <= max_value);
+  UNREFERENCED_PARAMETER(max_value);
+  return default_value;
+}
+
+uint64_t convertPercent(double percent, uint64_t max_value) {
+  // Checked by schema.
+  ASSERT(percent >= 0.0 && percent <= 100.0);
+  return max_value * (percent / 100.0);
+}
+
+} // namespace ProtobufPercentHelper
 
 MissingFieldException::MissingFieldException(const std::string& field_name,
                                              const Protobuf::Message& message)
@@ -59,12 +73,16 @@ void MessageUtil::loadFromFile(const std::string& path, Protobuf::Message& messa
   }
 }
 
-std::string MessageUtil::getJsonStringFromMessage(const Protobuf::Message& message) {
+std::string MessageUtil::getJsonStringFromMessage(const Protobuf::Message& message,
+                                                  const bool pretty_print) {
   Protobuf::util::JsonPrintOptions json_options;
   // By default, proto field names are converted to camelCase when the message is converted to JSON.
   // Setting this option makes debugging easier because it keeps field names consistent in JSON
   // printouts.
   json_options.preserve_proto_field_names = true;
+  if (pretty_print) {
+    json_options.add_whitespace = true;
+  }
   ProtobufTypes::String json;
   const auto status = Protobuf::util::MessageToJsonString(message, &json, json_options);
   // This should always succeed unless something crash-worthy such as out-of-memory.

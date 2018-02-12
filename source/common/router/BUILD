@@ -50,7 +50,7 @@ envoy_cc_library(
         "//source/common/filesystem:filesystem_lib",
         "//source/common/http:headers_lib",
         "//source/common/protobuf:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:rds_cc",
+        "@envoy_api//envoy/api/v2:rds_cc",
     ],
 )
 
@@ -76,8 +76,8 @@ envoy_cc_library(
         "//source/common/config:subscription_factory_lib",
         "//source/common/config:utility_lib",
         "//source/common/protobuf:utility_lib",
-        "@envoy_api//envoy/api/v2/filter/network:http_connection_manager_cc",
-        "@envoy_api//envoy/service/discovery/v2:rds_cc",
+        "@envoy_api//envoy/api/v2:rds_cc",
+        "@envoy_api//envoy/config/filter/network/http_connection_manager/v2:http_connection_manager_cc",
     ],
 )
 
@@ -93,7 +93,7 @@ envoy_cc_library(
         "//source/common/http:headers_lib",
         "//source/common/http:rest_api_fetcher_lib",
         "//source/common/json:json_loader_lib",
-        "@envoy_api//envoy/api/v2/filter/network:http_connection_manager_cc",
+        "@envoy_api//envoy/config/filter/network/http_connection_manager/v2:http_connection_manager_cc",
     ],
 )
 
@@ -101,9 +101,6 @@ envoy_cc_library(
     name = "retry_state_lib",
     srcs = ["retry_state_impl.cc"],
     hdrs = ["retry_state_impl.h"],
-    external_deps = [
-        "abseil_strings",
-    ],
     deps = [
         "//include/envoy/common:optional",
         "//include/envoy/event:timer_interface",
@@ -162,7 +159,7 @@ envoy_cc_library(
         "//source/common/http:utility_lib",
         "//source/common/request_info:request_info_lib",
         "//source/common/tracing:http_tracer_lib",
-        "@envoy_api//envoy/api/v2/filter/http:router_cc",
+        "@envoy_api//envoy/config/filter/http/router/v2:router_cc",
     ],
 )
 

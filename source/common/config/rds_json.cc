@@ -31,7 +31,7 @@ void RdsJson::translateVirtualCluster(const Json::Object& json_virtual_cluster,
   JSON_UTIL_SET_STRING(json_virtual_cluster, virtual_cluster, name);
   JSON_UTIL_SET_STRING(json_virtual_cluster, virtual_cluster, pattern);
 
-  envoy::api::v2::RequestMethod method{};
+  envoy::api::v2::core::RequestMethod method{};
   RequestMethod_Parse(json_virtual_cluster.getString("method", "METHOD_UNSPECIFIED"), &method);
   virtual_cluster.set_method(method);
 }
@@ -106,7 +106,7 @@ void RdsJson::translateQueryParameterMatcher(
 }
 
 void RdsJson::translateRouteConfiguration(const Json::Object& json_route_config,
-                                          envoy::api::v2::route::RouteConfiguration& route_config) {
+                                          envoy::api::v2::RouteConfiguration& route_config) {
   json_route_config.validateSchema(Json::Schema::ROUTE_CONFIGURATION_SCHEMA);
 
   for (const auto json_virtual_host : json_route_config.getObjectArray("virtual_hosts", true)) {
@@ -297,7 +297,7 @@ void RdsJson::translateRoute(const Json::Object& json_route, envoy::api::v2::rou
       JSON_UTIL_SET_STRING(*json_shadow, *request_mirror_policy, runtime_key);
     }
 
-    envoy::api::v2::RoutingPriority priority{};
+    envoy::api::v2::core::RoutingPriority priority{};
     RoutingPriority_Parse(StringUtil::toUpper(json_route.getString("priority", "default")),
                           &priority);
     action->set_priority(priority);

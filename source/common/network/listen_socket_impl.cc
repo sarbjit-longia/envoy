@@ -8,10 +8,9 @@
 #include "envoy/common/exception.h"
 
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Network {
@@ -30,9 +29,8 @@ void ListenSocketImpl::doBind() {
   }
 }
 
-TcpListenSocket::TcpListenSocket(Address::InstanceConstSharedPtr address, bool bind_to_port) {
-  local_address_ = address;
-  fd_ = local_address_->socket(Address::SocketType::Stream);
+TcpListenSocket::TcpListenSocket(const Address::InstanceConstSharedPtr& address, bool bind_to_port)
+    : ListenSocketImpl(address->socket(Address::SocketType::Stream), address) {
   RELEASE_ASSERT(fd_ != -1);
 
   int on = 1;
@@ -44,14 +42,12 @@ TcpListenSocket::TcpListenSocket(Address::InstanceConstSharedPtr address, bool b
   }
 }
 
-TcpListenSocket::TcpListenSocket(int fd, Address::InstanceConstSharedPtr address) {
-  fd_ = fd;
-  local_address_ = address;
-}
+TcpListenSocket::TcpListenSocket(int fd, const Address::InstanceConstSharedPtr& address)
+    : ListenSocketImpl(fd, address) {}
 
-UdsListenSocket::UdsListenSocket(const std::string& uds_path) {
+UdsListenSocket::UdsListenSocket(const std::string& uds_path)
+    : ListenSocketImpl(-1, std::make_shared<Address::PipeInstance>(uds_path)) {
   remove(uds_path.c_str());
-  local_address_.reset(new Address::PipeInstance(uds_path));
   fd_ = local_address_->socket(Address::SocketType::Stream);
   RELEASE_ASSERT(fd_ != -1);
   doBind();

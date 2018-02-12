@@ -22,7 +22,7 @@ envoy_cc_library(
         "//include/envoy/http:conn_pool_interface",
         "//include/envoy/local_info:local_info_interface",
         "//include/envoy/runtime:runtime_interface",
-        "@envoy_api//envoy/api/v2/cluster:cluster_cc",
+        "@envoy_api//envoy/api/v2:cds_cc",
         "@envoy_api//envoy/config/bootstrap/v2:bootstrap_cc",
     ],
 )
@@ -46,7 +46,7 @@ envoy_cc_library(
         ":outlier_detection_interface",
         "//include/envoy/network:address_interface",
         "//include/envoy/stats:stats_macros",
-        "@envoy_api//envoy/api/v2:base_cc",
+        "@envoy_api//envoy/api/v2/core:base_cc",
     ],
 )
 
@@ -64,7 +64,7 @@ envoy_cc_library(
     hdrs = ["load_balancer_type.h"],
     deps = [
         "//source/common/protobuf",
-        "@envoy_api//envoy/api/v2/cluster:cluster_cc",
+        "@envoy_api//envoy/api/v2:cds_cc",
     ],
 )
 

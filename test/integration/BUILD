@@ -29,17 +29,18 @@ envoy_cc_test(
     data = ["//test/config/integration:server_ads.yaml"],
     deps = [
         ":http_integration_lib",
+        "//source/common/config:protobuf_link_hacks",
         "//source/common/config:resources_lib",
         "//source/common/protobuf:utility_lib",
         "//test/common/grpc:grpc_client_integration_lib",
         "//test/test_common:network_utility_lib",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/api/v2:cds_cc",
+        "@envoy_api//envoy/api/v2:discovery_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:lds_cc",
+        "@envoy_api//envoy/api/v2:rds_cc",
         "@envoy_api//envoy/service/discovery/v2:ads_cc",
-        "@envoy_api//envoy/service/discovery/v2:cds_cc",
-        "@envoy_api//envoy/service/discovery/v2:common_cc",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
-        "@envoy_api//envoy/service/discovery/v2:lds_cc",
-        "@envoy_api//envoy/service/discovery/v2:rds_cc",
     ],
 )
 
@@ -107,7 +108,7 @@ envoy_cc_test(
     deps = [
         ":http_integration_lib",
         "//source/common/protobuf",
-        "@envoy_api//envoy/api/v2/filter/network:http_connection_manager_cc",
+        "@envoy_api//envoy/config/filter/network/http_connection_manager/v2:http_connection_manager_cc",
     ],
 )
 
@@ -152,6 +153,17 @@ envoy_cc_test(
         ":http_integration_lib",
         "//source/common/http:header_map_lib",
         "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "gzip_filter_integration_test",
+    srcs = [
+        "gzip_filter_integration_test.cc",
+    ],
+    deps = [
+        ":http_integration_lib",
+        "//source/common/decompressor:decompressor_lib",
     ],
 )
 
@@ -268,6 +280,7 @@ envoy_cc_test_library(
         "//source/server/config/http:fault_lib",
         "//source/server/config/http:grpc_http1_bridge_lib",
         "//source/server/config/http:grpc_json_transcoder_lib",
+        "//source/server/config/http:gzip_lib",
         "//source/server/config/http:ip_tagging_lib",
         "//source/server/config/http:lightstep_lib",
         "//source/server/config/http:lua_lib",
@@ -346,7 +359,7 @@ envoy_cc_test(
         ":http_integration_lib",
         "//source/common/config:resources_lib",
         "//test/test_common:network_utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
     ],
 )
 
@@ -475,6 +488,21 @@ envoy_cc_test(
     deps = [
         ":http_integration_lib",
         "//source/common/http:header_map_lib",
+        "//test/test_common:utility_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "squash_filter_integration_test",
+    srcs = [
+        "squash_filter_integration_test.cc",
+    ],
+    deps = [
+        ":http_integration_lib",
+        "//source/common/http:header_map_lib",
+        "//source/server/config/http:squash_lib",
+        "//test/mocks/http:http_mocks",
+        "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
     ],
 )

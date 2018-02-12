@@ -28,7 +28,7 @@ envoy_cc_test_library(
         "//test/mocks/config:config_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
     ],
 )
 
@@ -37,15 +37,16 @@ envoy_cc_test(
     srcs = ["grpc_mux_impl_test.cc"],
     deps = [
         "//source/common/config:grpc_mux_lib",
+        "//source/common/config:protobuf_link_hacks",
         "//source/common/config:resources_lib",
         "//source/common/protobuf",
         "//test/mocks/config:config_mocks",
         "//test/mocks/event:event_mocks",
         "//test/mocks/grpc:grpc_mocks",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/api/v2:discovery_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
         "@envoy_api//envoy/service/discovery/v2:ads_cc",
-        "@envoy_api//envoy/service/discovery/v2:common_cc",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
     ],
 )
 
@@ -70,7 +71,7 @@ envoy_cc_test_library(
         "//test/mocks/grpc:grpc_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
     ],
 )
 
@@ -97,7 +98,7 @@ envoy_cc_test_library(
         "//test/mocks/runtime:runtime_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
     ],
 )
 
@@ -114,8 +115,8 @@ envoy_cc_test(
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/api/v2:base_cc",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
+        "@envoy_api//envoy/api/v2/core:base_cc",
     ],
 )
 
@@ -164,7 +165,7 @@ envoy_cc_test(
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
     ],
 )
 

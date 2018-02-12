@@ -36,14 +36,16 @@ public:
 
   void TearDown() override;
 
-  Ssl::ServerContextPtr createUpstreamSslContext();
+  Network::TransportSocketFactoryPtr createUpstreamSslContext();
   Network::TransportSocketFactoryPtr createClientSslContext(bool mtls);
   Network::ClientConnectionPtr makeClientConnection();
   Network::ClientConnectionPtr makeTlsClientConnection();
   Network::ClientConnectionPtr makeMtlsClientConnection();
   void testRequestAndResponseWithXfccHeader(std::string privous_xfcc, std::string expected_xfcc);
-  envoy::api::v2::filter::network::HttpConnectionManager::ForwardClientCertDetails fcc_;
-  envoy::api::v2::filter::network::HttpConnectionManager::SetCurrentClientCertDetails sccd_;
+  envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      ForwardClientCertDetails fcc_;
+  envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      SetCurrentClientCertDetails sccd_;
   bool tls_ = true;
 
 private:
@@ -51,7 +53,7 @@ private:
   std::unique_ptr<Ssl::ContextManager> context_manager_;
   Network::TransportSocketFactoryPtr client_tls_ssl_ctx_;
   Network::TransportSocketFactoryPtr client_mtls_ssl_ctx_;
-  Ssl::ServerContextPtr upstream_ssl_ctx_;
+  Network::TransportSocketFactoryPtr upstream_ssl_ctx_;
 };
 } // namespace Xfcc
 } // namespace Envoy

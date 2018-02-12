@@ -1,6 +1,6 @@
+#include "envoy/api/v2/eds.pb.h"
 #include "envoy/api/v2/endpoint/endpoint.pb.h"
 #include "envoy/api/v2/endpoint/load_report.pb.h"
-#include "envoy/service/discovery/v2/eds.pb.h"
 #include "envoy/service/load_stats/v2/lrs.pb.h"
 
 #include "common/config/resources.h"
@@ -36,7 +36,7 @@ public:
                                    const std::vector<uint32_t>& p1_winter_upstreams,
                                    const std::vector<uint32_t>& p1_dragon_upstreams) {
     uint32_t num_endpoints = 0;
-    envoy::service::discovery::v2::ClusterLoadAssignment cluster_load_assignment;
+    envoy::api::v2::ClusterLoadAssignment cluster_load_assignment;
     cluster_load_assignment.set_cluster_name("cluster_0");
 
     auto* winter = cluster_load_assignment.add_endpoints();
@@ -74,7 +74,7 @@ public:
     }
 
     // Write to file the DiscoveryResponse and trigger inotify watch.
-    envoy::service::discovery::v2::DiscoveryResponse eds_response;
+    envoy::api::v2::DiscoveryResponse eds_response;
     eds_response.set_version_info(std::to_string(eds_version_++));
     eds_response.set_type_url(Config::TypeUrl::get().ClusterLoadAssignment);
     eds_response.add_resources()->PackFrom(cluster_load_assignment);
@@ -109,7 +109,7 @@ public:
     config_helper_.addConfigModifier([this](envoy::config::bootstrap::v2::Bootstrap& bootstrap) {
       // Setup load reporting and corresponding gRPC cluster.
       auto* loadstats_config = bootstrap.mutable_cluster_manager()->mutable_load_stats_config();
-      loadstats_config->set_api_type(envoy::api::v2::ApiConfigSource::GRPC);
+      loadstats_config->set_api_type(envoy::api::v2::core::ApiConfigSource::GRPC);
       loadstats_config->add_cluster_names("load_report");
       auto* load_report_cluster = bootstrap.mutable_static_resources()->add_clusters();
       load_report_cluster->MergeFrom(bootstrap.static_resources().clusters()[0]);
@@ -121,15 +121,14 @@ public:
       auto* locality = bootstrap.mutable_node()->mutable_locality();
       locality->set_region("some_region");
       locality->set_zone("zone_name");
-      locality->set_sub_zone("winter");
+      locality->set_sub_zone(sub_zone_);
       // Switch predefined cluster_0 to EDS filesystem sourcing.
       auto* cluster_0 = bootstrap.mutable_static_resources()->mutable_clusters(0);
       cluster_0->mutable_hosts()->Clear();
-      cluster_0->set_type(envoy::api::v2::cluster::Cluster::EDS);
+      cluster_0->set_type(envoy::api::v2::Cluster::EDS);
       auto* eds_cluster_config = cluster_0->mutable_eds_cluster_config();
       eds_cluster_config->mutable_eds_config()->set_path(eds_path_);
     });
-    named_ports_ = {"http"};
     HttpIntegrationTest::initialize();
     for (uint32_t i = 0; i < upstream_endpoints_; ++i) {
       fake_upstreams_.emplace_back(new FakeUpstream(0, FakeHttpConnection::Type::HTTP1, version_));
@@ -242,10 +241,10 @@ public:
     upstream_request_->encodeData(response_size_, true);
     response_->waitForEndStream();
 
-    EXPECT_TRUE(upstream_request_->complete());
+    ASSERT_TRUE(upstream_request_->complete());
     EXPECT_EQ(request_size_, upstream_request_->bodyLength());
 
-    EXPECT_TRUE(response_->complete());
+    ASSERT_TRUE(response_->complete());
     EXPECT_STREQ(std::to_string(response_code).c_str(),
                  response_->headers().Status()->value().c_str());
     EXPECT_EQ(response_size_, response_->body().size());
@@ -301,6 +300,7 @@ public:
 
   static constexpr uint32_t upstream_endpoints_ = 5;
 
+  std::string sub_zone_{"winter"};
   FakeHttpConnectionPtr fake_loadstats_connection_;
   FakeStreamPtr loadstats_stream_;
   FakeUpstream* load_report_upstream_{};
@@ -405,6 +405,39 @@ TEST_P(LoadStatsIntegrationTest, Success) {
   cleanupLoadStatsConnection();
 }
 
+// Validate the load reports for requests when all endpoints are non-local.
+TEST_P(LoadStatsIntegrationTest, NoLocalLocality) {
+  sub_zone_ = "summer";
+  initialize();
+
+  waitForLoadStatsStream();
+  waitForLoadStatsRequest({});
+  loadstats_stream_->startGrpcStream();
+
+  // Simple 50%/50% split between dragon/winter localities. Also include an
+  // unknown cluster to exercise the handling of this case.
+  requestLoadStatsResponse({"cluster_0", "cluster_1"});
+
+  updateClusterLoadAssignment({0}, {1}, {3}, {});
+
+  for (uint32_t i = 0; i < 4; ++i) {
+    sendAndReceiveUpstream(i % 2);
+  }
+
+  // Verify we do not get empty stats for non-zero priorities. Note that the
+  // order of locality stats is different to the Success case, where winter is
+  // the local locality (and hence first in the list as per
+  // HostsPerLocality::get()).
+  waitForLoadStatsRequest({localityStats("dragon", 2, 0, 0), localityStats("winter", 2, 0, 0)});
+
+  EXPECT_EQ(1, test_server_->counter("load_reporter.requests")->value());
+  // On slow machines, more than one load stats response may be pushed while we are simulating load.
+  EXPECT_LE(2, test_server_->counter("load_reporter.responses")->value());
+  EXPECT_EQ(0, test_server_->counter("load_reporter.errors")->value());
+
+  cleanupLoadStatsConnection();
+}
+
 // Validate the load reports for successful/error requests make sense.
 TEST_P(LoadStatsIntegrationTest, Error) {
   initialize();
@@ -472,7 +505,7 @@ TEST_P(LoadStatsIntegrationTest, Dropped) {
   // This should count as dropped, since we trigger circuit breaking.
   initiateClientConnection();
   response_->waitForEndStream();
-  EXPECT_TRUE(response_->complete());
+  ASSERT_TRUE(response_->complete());
   EXPECT_STREQ("503", response_->headers().Status()->value().c_str());
   cleanupUpstreamConnection();
 

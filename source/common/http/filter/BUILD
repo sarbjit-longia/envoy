@@ -79,7 +79,25 @@ envoy_cc_library(
         "//source/common/http:headers_lib",
         "//source/common/protobuf:utility_lib",
         "//source/common/router:config_lib",
-        "@envoy_api//envoy/api/v2/filter/http:fault_cc",
+        "@envoy_api//envoy/config/filter/http/fault/v2:fault_cc",
+    ],
+)
+
+envoy_cc_library(
+    name = "gzip_filter_lib",
+    srcs = ["gzip_filter.cc"],
+    hdrs = ["gzip_filter.h"],
+    deps = [
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/json:json_object_interface",
+        "//source/common/buffer:buffer_lib",
+        "//source/common/compressor:compressor_lib",
+        "//source/common/http:header_map_lib",
+        "//source/common/http:headers_lib",
+        "//source/common/json:config_schemas_lib",
+        "//source/common/json:json_validator_lib",
+        "//source/common/protobuf",
+        "@envoy_api//envoy/config/filter/http/gzip/v2:gzip_cc",
     ],
 )
 
@@ -93,6 +111,26 @@ envoy_cc_library(
         "//source/common/common:assert_lib",
         "//source/common/json:config_schemas_lib",
         "//source/common/json:json_validator_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "squash_filter_lib",
+    srcs = ["squash_filter.cc"],
+    hdrs = ["squash_filter.h"],
+    deps = [
+        "//include/envoy/event:timer_interface",
+        "//include/envoy/http:codes_interface",
+        "//include/envoy/http:filter_interface",
+        "//include/envoy/http:header_map_interface",
+        "//include/envoy/upstream:cluster_manager_interface",
+        "//source/common/common:empty_string",
+        "//source/common/common:enum_to_int",
+        "//source/common/http:headers_lib",
+        "//source/common/http:message_lib",
+        "//source/common/http:utility_lib",
+        "//source/common/protobuf:utility_lib",
+        "@envoy_api//envoy/config/filter/http/squash/v2:squash_cc",
     ],
 )
 
@@ -124,6 +162,6 @@ envoy_cc_library(
         "//source/common/json:config_schemas_lib",
         "//source/common/json:json_loader_lib",
         "//source/common/json:json_validator_lib",
-        "@envoy_api//envoy/api/v2/filter/http:rate_limit_cc",
+        "@envoy_api//envoy/config/filter/http/rate_limit/v2:rate_limit_cc",
     ],
 )

@@ -35,11 +35,13 @@ namespace Network {
 
 class NetworkFilterManagerTest : public testing::Test, public BufferSource {
 public:
-  Buffer::Instance& getReadBuffer() override { return read_buffer_; }
-  Buffer::Instance& getWriteBuffer() override { return write_buffer_; }
+  StreamBuffer getReadBuffer() override { return {read_buffer_, read_end_stream_}; }
+  StreamBuffer getWriteBuffer() override { return {write_buffer_, write_end_stream_}; }
 
   Buffer::OwnedImpl read_buffer_;
   Buffer::OwnedImpl write_buffer_;
+  bool read_end_stream_{};
+  bool write_end_stream_{};
 };
 
 class LocalMockFilter : public MockFilter {
@@ -74,24 +76,74 @@ TEST_F(NetworkFilterManagerTest, All) {
   read_filter->callbacks_->continueReading();
 
   read_buffer_.add("hello");
-  EXPECT_CALL(*read_filter, onData(BufferStringEqual("hello")))
+  read_end_stream_ = false;
+  EXPECT_CALL(*read_filter, onData(BufferStringEqual("hello"), false))
       .WillOnce(Return(FilterStatus::StopIteration));
   manager.onRead();
 
   read_buffer_.add("world");
-  EXPECT_CALL(*filter, onData(BufferStringEqual("helloworld")))
+  EXPECT_CALL(*filter, onData(BufferStringEqual("helloworld"), false))
       .WillOnce(Return(FilterStatus::Continue));
   read_filter->callbacks_->continueReading();
 
   write_buffer_.add("foo");
-  EXPECT_CALL(*write_filter, onWrite(BufferStringEqual("foo")))
+  write_end_stream_ = false;
+  EXPECT_CALL(*write_filter, onWrite(BufferStringEqual("foo"), false))
       .WillOnce(Return(FilterStatus::StopIteration));
   manager.onWrite();
 
   write_buffer_.add("bar");
-  EXPECT_CALL(*write_filter, onWrite(BufferStringEqual("foobar")))
+  EXPECT_CALL(*write_filter, onWrite(BufferStringEqual("foobar"), false))
       .WillOnce(Return(FilterStatus::Continue));
-  EXPECT_CALL(*filter, onWrite(BufferStringEqual("foobar")))
+  EXPECT_CALL(*filter, onWrite(BufferStringEqual("foobar"), false))
+      .WillOnce(Return(FilterStatus::Continue));
+  manager.onWrite();
+}
+
+// Test that end_stream is delivered in the correct order with the data, even
+// if FilterStatus::StopIteration occurs.
+TEST_F(NetworkFilterManagerTest, EndStream) {
+  InSequence s;
+
+  Upstream::HostDescription* host_description(new NiceMock<Upstream::MockHostDescription>());
+  MockReadFilter* read_filter(new MockReadFilter());
+  MockWriteFilter* write_filter(new MockWriteFilter());
+  MockFilter* filter(new LocalMockFilter());
+
+  NiceMock<MockConnection> connection;
+  FilterManagerImpl manager(connection, *this);
+  manager.addReadFilter(ReadFilterSharedPtr{read_filter});
+  manager.addWriteFilter(WriteFilterSharedPtr{write_filter});
+  manager.addFilter(FilterSharedPtr{filter});
+
+  read_filter->callbacks_->upstreamHost(Upstream::HostDescriptionConstSharedPtr{host_description});
+  EXPECT_EQ(read_filter->callbacks_->upstreamHost(), filter->callbacks_->upstreamHost());
+
+  EXPECT_CALL(*read_filter, onNewConnection()).WillOnce(Return(FilterStatus::Continue));
+  EXPECT_CALL(*filter, onNewConnection()).WillOnce(Return(FilterStatus::Continue));
+  EXPECT_EQ(manager.initializeReadFilters(), true);
+
+  read_buffer_.add("hello");
+  read_end_stream_ = true;
+  EXPECT_CALL(*read_filter, onData(BufferStringEqual("hello"), true))
+      .WillOnce(Return(FilterStatus::StopIteration));
+  manager.onRead();
+
+  read_buffer_.add("world");
+  EXPECT_CALL(*filter, onData(BufferStringEqual("helloworld"), true))
+      .WillOnce(Return(FilterStatus::Continue));
+  read_filter->callbacks_->continueReading();
+
+  write_buffer_.add("foo");
+  write_end_stream_ = true;
+  EXPECT_CALL(*write_filter, onWrite(BufferStringEqual("foo"), true))
+      .WillOnce(Return(FilterStatus::StopIteration));
+  manager.onWrite();
+
+  write_buffer_.add("bar");
+  EXPECT_CALL(*write_filter, onWrite(BufferStringEqual("foobar"), true))
+      .WillOnce(Return(FilterStatus::Continue));
+  EXPECT_CALL(*filter, onWrite(BufferStringEqual("foobar"), true))
       .WillOnce(Return(FilterStatus::Continue));
   manager.onWrite();
 }
@@ -121,7 +173,7 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
       .WillByDefault(Return(true));
 
   Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(rl_json);
-  envoy::api::v2::filter::network::RateLimit proto_config{};
+  envoy::config::filter::network::rate_limit::v2::RateLimit proto_config{};
   Config::FilterJson::translateTcpRateLimitFilter(*json_config, proto_config);
 
   RateLimit::TcpFilter::ConfigSharedPtr rl_config(new RateLimit::TcpFilter::Config(
@@ -130,7 +182,7 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
   manager.addReadFilter(ReadFilterSharedPtr{
       new RateLimit::TcpFilter::Instance(rl_config, RateLimit::ClientPtr{rl_client})});
 
-  envoy::api::v2::filter::network::TcpProxy tcp_proxy;
+  envoy::config::filter::network::tcp_proxy::v2::TcpProxy tcp_proxy;
   tcp_proxy.set_stat_prefix("name");
   tcp_proxy.set_cluster("fake_cluster");
   Envoy::Filter::TcpProxyConfigSharedPtr tcp_proxy_config(
@@ -163,7 +215,7 @@ TEST_F(NetworkFilterManagerTest, RateLimitAndTcpProxy) {
   upstream_connection->raiseEvent(Network::ConnectionEvent::Connected);
 
   Buffer::OwnedImpl buffer("hello");
-  EXPECT_CALL(*upstream_connection, write(BufferEqual(&buffer)));
+  EXPECT_CALL(*upstream_connection, write(BufferEqual(&buffer), _));
   read_buffer_.add("hello");
   manager.onRead();
 }

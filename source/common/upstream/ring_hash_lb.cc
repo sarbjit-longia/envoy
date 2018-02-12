@@ -15,8 +15,10 @@ namespace Upstream {
 RingHashLoadBalancer::RingHashLoadBalancer(
     PrioritySet& priority_set, ClusterStats& stats, Runtime::Loader& runtime,
     Runtime::RandomGenerator& random,
-    const Optional<envoy::api::v2::cluster::Cluster::RingHashLbConfig>& config)
-    : LoadBalancerBase(priority_set, stats, runtime, random), config_(config),
+    const Optional<envoy::api::v2::Cluster::RingHashLbConfig>& config,
+    const envoy::api::v2::Cluster::CommonLbConfig& common_config)
+
+    : LoadBalancerBase(priority_set, stats, runtime, random, common_config), config_(config),
       factory_(new LoadBalancerFactoryImpl(stats, random)) {}
 
 void RingHashLoadBalancer::initialize() {
@@ -26,8 +28,8 @@ void RingHashLoadBalancer::initialize() {
   // I will look into doing this in a follow up. Doing everything using a background thread heavily
   // complicated initialization as the load balancer would need its own initialized callback. I
   // think the synchronous/asynchronous split is probably the best option.
-  priority_set_.addMemberUpdateCb([this](uint32_t, const std::vector<HostSharedPtr>&,
-                                         const std::vector<HostSharedPtr>&) -> void { refresh(); });
+  priority_set_.addMemberUpdateCb(
+      [this](uint32_t, const HostVector&, const HostVector&) -> void { refresh(); });
 
   refresh();
 }
@@ -103,9 +105,8 @@ HostConstSharedPtr RingHashLoadBalancer::Ring::chooseHost(uint64_t h) const {
   }
 }
 
-RingHashLoadBalancer::Ring::Ring(
-    const Optional<envoy::api::v2::cluster::Cluster::RingHashLbConfig>& config,
-    const std::vector<HostSharedPtr>& hosts) {
+RingHashLoadBalancer::Ring::Ring(const Optional<envoy::api::v2::Cluster::RingHashLbConfig>& config,
+                                 const HostVector& hosts) {
   ENVOY_LOG(trace, "ring hash: building ring");
   if (hosts.empty()) {
     return;
@@ -191,7 +192,7 @@ void RingHashLoadBalancer::refresh() {
   for (auto& host_set : priority_set_.hostSetsPerPriority()) {
     uint32_t priority = host_set->priority();
     (*per_priority_state)[priority].reset(new PerPriorityState);
-    if (isGlobalPanic(*host_set, runtime_)) {
+    if (isGlobalPanic(*host_set)) {
       (*per_priority_state)[priority]->current_ring_ =
           std::make_shared<Ring>(config_, host_set->hosts());
       (*per_priority_state)[priority]->global_panic_ = true;

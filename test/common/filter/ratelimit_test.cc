@@ -48,7 +48,7 @@ public:
         .WillByDefault(Return(true));
 
     Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json);
-    envoy::api::v2::filter::network::RateLimit proto_config{};
+    envoy::config::filter::network::rate_limit::v2::RateLimit proto_config{};
     Envoy::Config::FilterJson::translateTcpRateLimitFilter(*json_config, proto_config);
     config_.reset(new Config(proto_config, stats_store_, runtime_));
     client_ = new MockClient();
@@ -86,7 +86,7 @@ TEST_F(RateLimitFilterTest, BadRatelimitConfig) {
   )EOF";
 
   Json::ObjectSharedPtr json_config = Json::Factory::loadFromString(json_string);
-  envoy::api::v2::filter::network::RateLimit proto_config{};
+  envoy::config::filter::network::rate_limit::v2::RateLimit proto_config{};
 
   EXPECT_THROW(Envoy::Config::FilterJson::translateTcpRateLimitFilter(*json_config, proto_config),
                Json::Exception);
@@ -104,13 +104,13 @@ TEST_F(RateLimitFilterTest, OK) {
 
   EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data));
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data, false));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data, false));
 
   EXPECT_CALL(filter_callbacks_, continueReading());
   request_callbacks_->complete(LimitStatus::OK);
 
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
 
   EXPECT_CALL(*client_, cancel()).Times(0);
   filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::LocalClose);
@@ -128,13 +128,13 @@ TEST_F(RateLimitFilterTest, OverLimit) {
 
   EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data, false));
 
   EXPECT_CALL(filter_callbacks_.connection_, close(Network::ConnectionCloseType::NoFlush));
   EXPECT_CALL(*client_, cancel()).Times(0);
   request_callbacks_->complete(LimitStatus::OverLimit);
 
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
 
   EXPECT_EQ(1U, stats_store_.counter("ratelimit.name.total").value());
   EXPECT_EQ(1U, stats_store_.counter("ratelimit.name.over_limit").value());
@@ -150,7 +150,7 @@ TEST_F(RateLimitFilterTest, OverLimitNotEnforcing) {
 
   EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data, false));
 
   EXPECT_CALL(runtime_.snapshot_, featureEnabled("ratelimit.tcp_filter_enforcing", 100))
       .WillOnce(Return(false));
@@ -159,7 +159,7 @@ TEST_F(RateLimitFilterTest, OverLimitNotEnforcing) {
   EXPECT_CALL(filter_callbacks_, continueReading());
   request_callbacks_->complete(LimitStatus::OverLimit);
 
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
 
   EXPECT_EQ(1U, stats_store_.counter("ratelimit.name.total").value());
   EXPECT_EQ(1U, stats_store_.counter("ratelimit.name.over_limit").value());
@@ -175,12 +175,12 @@ TEST_F(RateLimitFilterTest, Error) {
 
   EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data, false));
 
   EXPECT_CALL(filter_callbacks_, continueReading());
   request_callbacks_->complete(LimitStatus::Error);
 
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
 
   EXPECT_CALL(*client_, cancel()).Times(0);
   filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
@@ -198,7 +198,7 @@ TEST_F(RateLimitFilterTest, Disconnect) {
 
   EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::StopIteration, filter_->onData(data, false));
 
   EXPECT_CALL(*client_, cancel());
   filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
@@ -216,8 +216,8 @@ TEST_F(RateLimitFilterTest, ImmediateOK) {
 
   EXPECT_EQ(Network::FilterStatus::Continue, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
 
   EXPECT_CALL(*client_, cancel()).Times(0);
   filter_callbacks_.connection_.raiseEvent(Network::ConnectionEvent::RemoteClose);
@@ -235,7 +235,7 @@ TEST_F(RateLimitFilterTest, RuntimeDisable) {
 
   EXPECT_EQ(Network::FilterStatus::Continue, filter_->onNewConnection());
   Buffer::OwnedImpl data("hello");
-  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data));
+  EXPECT_EQ(Network::FilterStatus::Continue, filter_->onData(data, false));
 }
 
 } // namespace TcpFilter

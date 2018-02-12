@@ -7,8 +7,8 @@
 #include <string>
 
 #include "envoy/access_log/access_log.h"
-#include "envoy/api/v2/filter/network/mongo_proxy.pb.h"
 #include "envoy/common/time.h"
+#include "envoy/config/filter/network/mongo_proxy/v2/mongo_proxy.pb.h"
 #include "envoy/event/timer.h"
 #include "envoy/mongo/codec.h"
 #include "envoy/network/connection.h"
@@ -96,7 +96,7 @@ typedef std::shared_ptr<AccessLog> AccessLogSharedPtr;
  */
 class FaultConfig {
 public:
-  FaultConfig(const envoy::api::v2::filter::FaultDelay& fault_config)
+  FaultConfig(const envoy::config::filter::fault::v2::FaultDelay& fault_config)
       : delay_percent_(fault_config.percent()),
         duration_ms_(PROTOBUF_GET_MS_REQUIRED(fault_config, fixed_delay)) {}
   uint32_t delayPercent() const { return delay_percent_; }
@@ -126,7 +126,7 @@ public:
   virtual DecoderPtr createDecoder(DecoderCallbacks& callbacks) PURE;
 
   // Network::ReadFilter
-  Network::FilterStatus onData(Buffer::Instance& data) override;
+  Network::FilterStatus onData(Buffer::Instance& data, bool end_stream) override;
   Network::FilterStatus onNewConnection() override { return Network::FilterStatus::Continue; }
   void initializeReadFilterCallbacks(Network::ReadFilterCallbacks& callbacks) override {
     read_callbacks_ = &callbacks;
@@ -134,7 +134,7 @@ public:
   }
 
   // Network::WriteFilter
-  Network::FilterStatus onWrite(Buffer::Instance& data) override;
+  Network::FilterStatus onWrite(Buffer::Instance& data, bool end_stream) override;
 
   // Mongo::DecoderCallback
   void decodeGetMore(GetMoreMessagePtr&& message) override;

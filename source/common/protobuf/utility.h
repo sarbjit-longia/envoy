@@ -10,8 +10,6 @@
 #include "common/json/json_loader.h"
 #include "common/protobuf/protobuf.h"
 
-#include "fmt/format.h"
-
 // Obtain the value of a wrapped field (e.g. google.protobuf.UInt32Value) if set. Otherwise, return
 // the default value.
 #define PROTOBUF_GET_WRAPPED_OR_DEFAULT(message, field_name, default_value)                        \
@@ -43,6 +41,28 @@
   ((message).has_##field_name()                                                                    \
        ? Protobuf::util::TimeUtil::DurationToSeconds((message).field_name())                       \
        : throw MissingFieldException(#field_name, (message)))
+
+namespace Envoy {
+namespace ProtobufPercentHelper {
+
+// The following are helpers used in the PROTOBUF_PERCENT_TO_ROUNDED_INTEGER_OR_DEFAULT macro.
+// This avoids a giant macro mess when trying to do asserts, casts, etc.
+uint64_t checkAndReturnDefault(uint64_t default_value, uint64_t max_value);
+uint64_t convertPercent(double percent, uint64_t max_value);
+
+} // namespace ProtobufPercentHelper
+} // namespace Envoy
+
+// Convert an envoy::api::v2::core::Percent to a rounded integer or a default.
+// @param message supplies the proto message containing the field.
+// @param field_name supplies the field name in the message.
+// @param max_value supplies the maximum allowed integral value (e.g., 100, 10000, etc.).
+// @param default_value supplies the default if the field is not present.
+#define PROTOBUF_PERCENT_TO_ROUNDED_INTEGER_OR_DEFAULT(message, field_name, max_value,             \
+                                                       default_value)                              \
+  ((message).has_##field_name()                                                                    \
+       ? ProtobufPercentHelper::convertPercent((message).field_name().value(), max_value)          \
+       : ProtobufPercentHelper::checkAndReturnDefault(default_value, max_value))
 
 namespace Envoy {
 
@@ -178,9 +198,11 @@ public:
   /**
    * Extract JSON as string from a google.protobuf.Message.
    * @param message message of type type.googleapis.com/google.protobuf.Message.
-   * @return std::string of JSON object.
+   * @param pretty_print whether the returned JSON should be formatted.
+   * @return std::string of formatted JSON object.
    */
-  static std::string getJsonStringFromMessage(const Protobuf::Message& message);
+  static std::string getJsonStringFromMessage(const Protobuf::Message& message,
+                                              bool pretty_print = false);
 
   /**
    * Extract JSON object from a google.protobuf.Message.

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "envoy/api/v2/filter/network/http_connection_manager.pb.validate.h"
+#include "envoy/config/filter/network/http_connection_manager/v2/http_connection_manager.pb.validate.h"
 #include "envoy/filesystem/filesystem.h"
 #include "envoy/network/connection.h"
 #include "envoy/registry/registry.h"
@@ -14,6 +14,7 @@
 #include "envoy/stats/stats.h"
 
 #include "common/access_log/access_log_impl.h"
+#include "common/common/fmt.h"
 #include "common/config/filter_json.h"
 #include "common/config/utility.h"
 #include "common/http/date_provider_impl.h"
@@ -23,8 +24,6 @@
 #include "common/json/config_schemas.h"
 #include "common/protobuf/utility.h"
 #include "common/router/rds_impl.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Server {
@@ -37,7 +36,8 @@ SINGLETON_MANAGER_REGISTRATION(date_provider);
 SINGLETON_MANAGER_REGISTRATION(route_config_provider_manager);
 
 NetworkFilterFactoryCb HttpConnectionManagerFilterConfigFactory::createFilter(
-    const envoy::api::v2::filter::network::HttpConnectionManager& proto_config,
+    const envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager&
+        proto_config,
     FactoryContext& context) {
   std::shared_ptr<Http::TlsCachingDateProviderImpl> date_provider =
       context.singletonManager().getTyped<Http::TlsCachingDateProviderImpl>(
@@ -71,7 +71,7 @@ NetworkFilterFactoryCb HttpConnectionManagerFilterConfigFactory::createFilter(
 NetworkFilterFactoryCb
 HttpConnectionManagerFilterConfigFactory::createFilterFactory(const Json::Object& json_config,
                                                               FactoryContext& context) {
-  envoy::api::v2::filter::network::HttpConnectionManager proto_config;
+  envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager proto_config;
   Config::FilterJson::translateHttpConnectionManager(json_config, proto_config);
   return createFilter(proto_config, context);
 }
@@ -79,8 +79,9 @@ HttpConnectionManagerFilterConfigFactory::createFilterFactory(const Json::Object
 NetworkFilterFactoryCb HttpConnectionManagerFilterConfigFactory::createFilterFactoryFromProto(
     const Protobuf::Message& proto_config, FactoryContext& context) {
   return createFilter(
-      MessageUtil::downcastAndValidate<
-          const envoy::api::v2::filter::network::HttpConnectionManager&>(proto_config),
+      MessageUtil::downcastAndValidate<const envoy::config::filter::network::
+                                           http_connection_manager::v2::HttpConnectionManager&>(
+          proto_config),
       context);
 }
 
@@ -110,8 +111,9 @@ HttpConnectionManagerConfigUtility::determineNextProtocol(Network::Connection& c
 }
 
 HttpConnectionManagerConfig::HttpConnectionManagerConfig(
-    const envoy::api::v2::filter::network::HttpConnectionManager& config, FactoryContext& context,
-    Http::DateProvider& date_provider,
+    const envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager&
+        config,
+    FactoryContext& context, Http::DateProvider& date_provider,
     Router::RouteConfigProviderManager& route_config_provider_manager)
     : context_(context), stats_prefix_(fmt::format("http.{}.", config.stat_prefix())),
       stats_(Http::ConnectionManagerImpl::generateStats(stats_prefix_, context_.scope())),
@@ -124,27 +126,32 @@ HttpConnectionManagerConfig::HttpConnectionManagerConfig(
       drain_timeout_(PROTOBUF_GET_MS_OR_DEFAULT(config, drain_timeout, 5000)),
       generate_request_id_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(config, generate_request_id, true)),
       date_provider_(date_provider),
-      listener_stats_(Http::ConnectionManagerImpl::generateListenerStats(
-          stats_prefix_, context_.listenerScope())) {
+      listener_stats_(Http::ConnectionManagerImpl::generateListenerStats(stats_prefix_,
+                                                                         context_.listenerScope())),
+      proxy_100_continue_(config.proxy_100_continue()) {
 
   route_config_provider_ = Router::RouteConfigProviderUtil::create(
       config, context_.runtime(), context_.clusterManager(), context_.scope(), stats_prefix_,
       context_.initManager(), route_config_provider_manager_);
 
   switch (config.forward_client_cert_details()) {
-  case envoy::api::v2::filter::network::HttpConnectionManager::SANITIZE:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::SANITIZE:
     forward_client_cert_ = Http::ForwardClientCertType::Sanitize;
     break;
-  case envoy::api::v2::filter::network::HttpConnectionManager::FORWARD_ONLY:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      FORWARD_ONLY:
     forward_client_cert_ = Http::ForwardClientCertType::ForwardOnly;
     break;
-  case envoy::api::v2::filter::network::HttpConnectionManager::APPEND_FORWARD:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      APPEND_FORWARD:
     forward_client_cert_ = Http::ForwardClientCertType::AppendForward;
     break;
-  case envoy::api::v2::filter::network::HttpConnectionManager::SANITIZE_SET:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      SANITIZE_SET:
     forward_client_cert_ = Http::ForwardClientCertType::SanitizeSet;
     break;
-  case envoy::api::v2::filter::network::HttpConnectionManager::ALWAYS_FORWARD_ONLY:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+      ALWAYS_FORWARD_ONLY:
     forward_client_cert_ = Http::ForwardClientCertType::AlwaysForwardOnly;
     break;
   default:
@@ -158,6 +165,9 @@ HttpConnectionManagerConfig::HttpConnectionManagerConfig(
   if (PROTOBUF_GET_WRAPPED_OR_DEFAULT(set_current_client_cert_details, san, false)) {
     set_current_client_cert_details_.push_back(Http::ClientCertDetailsType::SAN);
   }
+  if (set_current_client_cert_details.cert()) {
+    set_current_client_cert_details_.push_back(Http::ClientCertDetailsType::Cert);
+  }
 
   if (config.has_add_user_agent() && config.add_user_agent().value()) {
     user_agent_.value(context_.localInfo().clusterName());
@@ -170,10 +180,12 @@ HttpConnectionManagerConfig::HttpConnectionManagerConfig(
     std::vector<Http::LowerCaseString> request_headers_for_tags;
 
     switch (tracing_config.operation_name()) {
-    case envoy::api::v2::filter::network::HttpConnectionManager::Tracing::INGRESS:
+    case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+        Tracing::INGRESS:
       tracing_operation_name = Tracing::OperationName::Ingress;
       break;
-    case envoy::api::v2::filter::network::HttpConnectionManager::Tracing::EGRESS:
+    case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::
+        Tracing::EGRESS:
       tracing_operation_name = Tracing::OperationName::Egress;
       break;
     default:
@@ -205,13 +217,13 @@ HttpConnectionManagerConfig::HttpConnectionManagerConfig(
   }
 
   switch (config.codec_type()) {
-  case envoy::api::v2::filter::network::HttpConnectionManager::AUTO:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::AUTO:
     codec_type_ = CodecType::AUTO;
     break;
-  case envoy::api::v2::filter::network::HttpConnectionManager::HTTP1:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::HTTP1:
     codec_type_ = CodecType::HTTP1;
     break;
-  case envoy::api::v2::filter::network::HttpConnectionManager::HTTP2:
+  case envoy::config::filter::network::http_connection_manager::v2::HttpConnectionManager::HTTP2:
     codec_type_ = CodecType::HTTP2;
     break;
   default:

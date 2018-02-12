@@ -2,6 +2,7 @@ licenses(["notice"])  # Apache 2
 
 load(
     "//bazel:envoy_build_system.bzl",
+    "envoy_cc_binary",
     "envoy_cc_test",
     "envoy_cc_test_library",
     "envoy_package",
@@ -64,7 +65,7 @@ envoy_cc_test(
         "//test/mocks/ssl:ssl_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
+        "@envoy_api//envoy/api/v2:eds_cc",
     ],
 )
 
@@ -122,6 +123,7 @@ envoy_cc_test(
     name = "load_balancer_simulation_test",
     srcs = ["load_balancer_simulation_test.cc"],
     deps = [
+        ":utility_lib",
         "//source/common/network:utility_lib",
         "//source/common/runtime:runtime_lib",
         "//source/common/upstream:load_balancer_lib",
@@ -142,9 +144,9 @@ envoy_cc_test(
         "//test/mocks/grpc:grpc_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/api/v2:eds_cc",
         "@envoy_api//envoy/api/v2/endpoint:endpoint_cc",
         "@envoy_api//envoy/api/v2/endpoint:load_report_cc",
-        "@envoy_api//envoy/service/discovery/v2:eds_cc",
     ],
 )
 
@@ -231,6 +233,23 @@ envoy_cc_test(
     ],
 )
 
+envoy_cc_binary(
+    name = "load_balancer_benchmark",
+    testonly = 1,
+    srcs = ["load_balancer_benchmark.cc"],
+    external_deps = [
+        "benchmark",
+    ],
+    deps = [
+        "//source/common/upstream:maglev_lb_lib",
+        "//source/common/upstream:ring_hash_lb_lib",
+        "//source/common/upstream:upstream_lib",
+        "//test/common/upstream:utility_lib",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:printers_lib",
+    ],
+)
+
 envoy_cc_test(
     name = "sds_test",
     srcs = ["sds_test.cc"],
@@ -250,7 +269,7 @@ envoy_cc_test(
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/api/v2:base_cc",
+        "@envoy_api//envoy/api/v2/core:base_cc",
     ],
 )
 

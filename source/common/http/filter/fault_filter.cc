@@ -12,14 +12,13 @@
 
 #include "common/common/assert.h"
 #include "common/common/empty_string.h"
+#include "common/common/fmt.h"
 #include "common/http/codes.h"
 #include "common/http/header_map_impl.h"
 #include "common/http/headers.h"
 #include "common/http/utility.h"
 #include "common/protobuf/utility.h"
 #include "common/router/config_impl.h"
-
-#include "fmt/format.h"
 
 namespace Envoy {
 namespace Http {
@@ -29,7 +28,7 @@ const std::string FaultFilter::ABORT_PERCENT_KEY = "fault.http.abort.abort_perce
 const std::string FaultFilter::DELAY_DURATION_KEY = "fault.http.delay.fixed_duration_ms";
 const std::string FaultFilter::ABORT_HTTP_STATUS_KEY = "fault.http.abort.http_status";
 
-FaultFilterConfig::FaultFilterConfig(const envoy::api::v2::filter::http::HTTPFault& fault,
+FaultFilterConfig::FaultFilterConfig(const envoy::config::filter::http::fault::v2::HTTPFault& fault,
                                      Runtime::Loader& runtime, const std::string& stats_prefix,
                                      Stats::Scope& scope)
     : runtime_(runtime), stats_(generateStats(stats_prefix, scope)), stats_prefix_(stats_prefix),

@@ -1,8 +1,9 @@
 #include "common/upstream/eds.h"
 
+#include "envoy/api/v2/eds.pb.validate.h"
 #include "envoy/common/exception.h"
-#include "envoy/service/discovery/v2/eds.pb.validate.h"
 
+#include "common/common/fmt.h"
 #include "common/config/metadata.h"
 #include "common/config/subscription_factory.h"
 #include "common/config/utility.h"
@@ -13,14 +14,11 @@
 #include "common/protobuf/utility.h"
 #include "common/upstream/sds_subscription.h"
 
-#include "fmt/format.h"
-
 namespace Envoy {
 namespace Upstream {
 
-EdsClusterImpl::EdsClusterImpl(const envoy::api::v2::cluster::Cluster& cluster,
-                               Runtime::Loader& runtime, Stats::Store& stats,
-                               Ssl::ContextManager& ssl_context_manager,
+EdsClusterImpl::EdsClusterImpl(const envoy::api::v2::Cluster& cluster, Runtime::Loader& runtime,
+                               Stats::Store& stats, Ssl::ContextManager& ssl_context_manager,
                                const LocalInfo::LocalInfo& local_info, ClusterManager& cm,
                                Event::Dispatcher& dispatcher, Runtime::RandomGenerator& random,
                                bool added_via_api)
@@ -32,25 +30,22 @@ EdsClusterImpl::EdsClusterImpl(const envoy::api::v2::cluster::Cluster& cluster,
                         : cluster.eds_cluster_config().service_name()) {
   Config::Utility::checkLocalInfo("eds", local_info);
 
-  // TODO: dummy to force linking the gRPC service proto
-  envoy::service::discovery::v2::EdsDummy dummy;
-
   const auto& eds_config = cluster.eds_cluster_config().eds_config();
   subscription_ = Config::SubscriptionFactory::subscriptionFromConfigSource<
-      envoy::service::discovery::v2::ClusterLoadAssignment>(
+      envoy::api::v2::ClusterLoadAssignment>(
       eds_config, local_info.node(), dispatcher, cm, random, info_->statsScope(),
       [this, &eds_config, &cm, &dispatcher,
-       &random]() -> Config::Subscription<envoy::service::discovery::v2::ClusterLoadAssignment>* {
+       &random]() -> Config::Subscription<envoy::api::v2::ClusterLoadAssignment>* {
         return new SdsSubscription(info_->stats(), eds_config, cm, dispatcher, random);
       },
-      "envoy.service.discovery.v2.EndpointDiscoveryService.FetchEndpoints",
-      "envoy.service.discovery.v2.EndpointDiscoveryService.StreamEndpoints");
+      "envoy.api.v2.EndpointDiscoveryService.FetchEndpoints",
+      "envoy.api.v2.EndpointDiscoveryService.StreamEndpoints");
 }
 
 void EdsClusterImpl::startPreInit() { subscription_->start({cluster_name_}, *this); }
 
 void EdsClusterImpl::onConfigUpdate(const ResourceVector& resources) {
-  typedef std::unique_ptr<std::vector<HostSharedPtr>> HostListPtr;
+  typedef std::unique_ptr<HostVector> HostListPtr;
   std::vector<HostListPtr> new_hosts(1);
   if (resources.empty()) {
     ENVOY_LOG(debug, "Missing ClusterLoadAssignment for {} in onConfigUpdate()", cluster_name_);
@@ -78,7 +73,7 @@ void EdsClusterImpl::onConfigUpdate(const ResourceVector& resources) {
       new_hosts.resize(priority + 1);
     }
     if (new_hosts[priority] == nullptr) {
-      new_hosts[priority] = HostListPtr{new std::vector<HostSharedPtr>};
+      new_hosts[priority] = HostListPtr{new HostVector};
     }
     for (const auto& lb_endpoint : locality_lb_endpoint.lb_endpoints()) {
       new_hosts[priority]->emplace_back(new HostImpl(
@@ -99,43 +94,54 @@ void EdsClusterImpl::onConfigUpdate(const ResourceVector& resources) {
   onPreInitComplete();
 }
 
-void EdsClusterImpl::updateHostsPerLocality(HostSet& host_set,
-                                            std::vector<HostSharedPtr>& new_hosts) {
-  HostVectorSharedPtr current_hosts_copy(new std::vector<HostSharedPtr>(host_set.hosts()));
+void EdsClusterImpl::updateHostsPerLocality(HostSet& host_set, HostVector& new_hosts) {
+  HostVectorSharedPtr current_hosts_copy(new HostVector(host_set.hosts()));
 
-  std::vector<HostSharedPtr> hosts_added;
-  std::vector<HostSharedPtr> hosts_removed;
+  HostVector hosts_added;
+  HostVector hosts_removed;
   if (updateDynamicHostList(new_hosts, *current_hosts_copy, hosts_added, hosts_removed,
                             health_checker_ != nullptr)) {
     ENVOY_LOG(debug, "EDS hosts changed for cluster: {} ({}) priority {}", info_->name(),
               host_set.hosts().size(), host_set.priority());
-    HostListsSharedPtr per_locality(new std::vector<std::vector<HostSharedPtr>>());
+    std::vector<HostVector> per_locality;
 
     // If local locality is not defined then skip populating per locality hosts.
     const Locality local_locality(local_info_.node().locality());
     ENVOY_LOG(trace, "Local locality: {}", local_info_.node().locality().DebugString());
-    if (!local_locality.empty()) {
-      std::map<Locality, std::vector<HostSharedPtr>> hosts_per_locality;
 
-      for (const HostSharedPtr& host : *current_hosts_copy) {
-        hosts_per_locality[Locality(host->locality())].push_back(host);
-      }
+    // We use std::map to guarantee a stable ordering for zone aware routing.
+    std::map<Locality, HostVector> hosts_per_locality;
 
-      // Populate per_locality hosts only if upstream cluster has hosts in the same locality.
-      if (hosts_per_locality.find(local_locality) != hosts_per_locality.end()) {
-        per_locality->push_back(hosts_per_locality[local_locality]);
+    for (const HostSharedPtr& host : *current_hosts_copy) {
+      hosts_per_locality[Locality(host->locality())].push_back(host);
+    }
 
-        for (auto& entry : hosts_per_locality) {
-          if (local_locality != entry.first) {
-            per_locality->push_back(entry.second);
-          }
-        }
+    // Do we have hosts for the local locality?
+    const bool non_empty_local_locality =
+        !local_locality.empty() &&
+        hosts_per_locality.find(local_locality) != hosts_per_locality.end();
+
+    // As per HostsPerLocality::get(), the per_locality vector must have the
+    // local locality hosts first if non_empty_local_locality.
+    if (non_empty_local_locality) {
+      per_locality.push_back(hosts_per_locality[local_locality]);
+    }
+
+    // After the local locality hosts (if any), we place the remaining locality
+    // host groups in lexicographic order. This provides a stable ordering for
+    // zone aware routing.
+    for (auto& entry : hosts_per_locality) {
+      if (!non_empty_local_locality || local_locality != entry.first) {
+        per_locality.push_back(entry.second);
       }
     }
 
+    auto per_locality_shared =
+        std::make_shared<HostsPerLocalityImpl>(std::move(per_locality), non_empty_local_locality);
+
     host_set.updateHosts(current_hosts_copy, createHealthyHostList(*current_hosts_copy),
-                         per_locality, createHealthyHostLists(*per_locality), hosts_added,
-                         hosts_removed);
+                         per_locality_shared, createHealthyHostLists(*per_locality_shared),
+                         hosts_added, hosts_removed);
   }
 }
 

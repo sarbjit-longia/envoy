@@ -13,14 +13,14 @@ namespace Config {
 
 void CdsJson::translateRingHashLbConfig(
     const Json::Object& json_ring_hash_lb_config,
-    envoy::api::v2::cluster::Cluster::RingHashLbConfig& ring_hash_lb_config) {
+    envoy::api::v2::Cluster::RingHashLbConfig& ring_hash_lb_config) {
   JSON_UTIL_SET_INTEGER(json_ring_hash_lb_config, ring_hash_lb_config, minimum_ring_size);
   JSON_UTIL_SET_BOOL(json_ring_hash_lb_config, *ring_hash_lb_config.mutable_deprecated_v1(),
                      use_std_hash);
 }
 
 void CdsJson::translateHealthCheck(const Json::Object& json_health_check,
-                                   envoy::api::v2::HealthCheck& health_check) {
+                                   envoy::api::v2::core::HealthCheck& health_check) {
   json_health_check.validateSchema(Json::Schema::CLUSTER_HEALTH_CHECK_SCHEMA);
 
   JSON_UTIL_SET_DURATION(json_health_check, health_check, timeout);
@@ -58,7 +58,7 @@ void CdsJson::translateHealthCheck(const Json::Object& json_health_check,
 }
 
 void CdsJson::translateThresholds(
-    const Json::Object& json_thresholds, const envoy::api::v2::RoutingPriority& priority,
+    const Json::Object& json_thresholds, const envoy::api::v2::core::RoutingPriority& priority,
     envoy::api::v2::cluster::CircuitBreakers::Thresholds& thresholds) {
   thresholds.set_priority(priority);
   JSON_UTIL_SET_INTEGER(json_thresholds, thresholds, max_connections);
@@ -70,10 +70,10 @@ void CdsJson::translateThresholds(
 void CdsJson::translateCircuitBreakers(const Json::Object& json_circuit_breakers,
                                        envoy::api::v2::cluster::CircuitBreakers& circuit_breakers) {
   translateThresholds(*json_circuit_breakers.getObject("default", true),
-                      envoy::api::v2::RoutingPriority::DEFAULT,
+                      envoy::api::v2::core::RoutingPriority::DEFAULT,
                       *circuit_breakers.mutable_thresholds()->Add());
   translateThresholds(*json_circuit_breakers.getObject("high", true),
-                      envoy::api::v2::RoutingPriority::HIGH,
+                      envoy::api::v2::core::RoutingPriority::HIGH,
                       *circuit_breakers.mutable_thresholds()->Add());
 }
 
@@ -95,8 +95,8 @@ void CdsJson::translateOutlierDetection(
 }
 
 void CdsJson::translateCluster(const Json::Object& json_cluster,
-                               const Optional<envoy::api::v2::ConfigSource>& eds_config,
-                               envoy::api::v2::cluster::Cluster& cluster) {
+                               const Optional<envoy::api::v2::core::ConfigSource>& eds_config,
+                               envoy::api::v2::Cluster& cluster) {
   json_cluster.validateSchema(Json::Schema::CLUSTER_SCHEMA);
 
   const std::string name = json_cluster.getString("name");
@@ -109,35 +109,35 @@ void CdsJson::translateCluster(const Json::Object& json_cluster,
     std::transform(hosts.cbegin(), hosts.cend(),
                    Protobuf::RepeatedPtrFieldBackInserter(cluster.mutable_hosts()),
                    [](const Json::ObjectSharedPtr& host) {
-                     envoy::api::v2::Address address;
+                     envoy::api::v2::core::Address address;
                      AddressJson::translateAddress(host->getString("url"), true, false, address);
                      return address;
                    });
   };
   if (string_type == "static") {
-    cluster.set_type(envoy::api::v2::cluster::Cluster::STATIC);
+    cluster.set_type(envoy::api::v2::Cluster::STATIC);
     const auto hosts = json_cluster.getObjectArray("hosts");
     std::transform(hosts.cbegin(), hosts.cend(),
                    Protobuf::RepeatedPtrFieldBackInserter(cluster.mutable_hosts()),
                    [](const Json::ObjectSharedPtr& host) {
-                     envoy::api::v2::Address address;
+                     envoy::api::v2::core::Address address;
                      AddressJson::translateAddress(host->getString("url"), true, true, address);
                      return address;
                    });
   } else if (string_type == "strict_dns") {
-    cluster.set_type(envoy::api::v2::cluster::Cluster::STRICT_DNS);
+    cluster.set_type(envoy::api::v2::Cluster::STRICT_DNS);
     set_dns_hosts();
   } else if (string_type == "logical_dns") {
-    cluster.set_type(envoy::api::v2::cluster::Cluster::LOGICAL_DNS);
+    cluster.set_type(envoy::api::v2::Cluster::LOGICAL_DNS);
     set_dns_hosts();
   } else if (string_type == "original_dst") {
     if (json_cluster.hasObject("hosts")) {
       throw EnvoyException("original_dst clusters must have no hosts configured");
     }
-    cluster.set_type(envoy::api::v2::cluster::Cluster::ORIGINAL_DST);
+    cluster.set_type(envoy::api::v2::Cluster::ORIGINAL_DST);
   } else {
     ASSERT(string_type == "sds");
-    cluster.set_type(envoy::api::v2::cluster::Cluster::EDS);
+    cluster.set_type(envoy::api::v2::Cluster::EDS);
     cluster.mutable_eds_cluster_config()->mutable_eds_config()->CopyFrom(eds_config.value());
     JSON_UTIL_SET_STRING(json_cluster, *cluster.mutable_eds_cluster_config(), service_name);
   }
@@ -148,16 +148,16 @@ void CdsJson::translateCluster(const Json::Object& json_cluster,
 
   const std::string lb_type = json_cluster.getString("lb_type");
   if (lb_type == "round_robin") {
-    cluster.set_lb_policy(envoy::api::v2::cluster::Cluster::ROUND_ROBIN);
+    cluster.set_lb_policy(envoy::api::v2::Cluster::ROUND_ROBIN);
   } else if (lb_type == "least_request") {
-    cluster.set_lb_policy(envoy::api::v2::cluster::Cluster::LEAST_REQUEST);
+    cluster.set_lb_policy(envoy::api::v2::Cluster::LEAST_REQUEST);
   } else if (lb_type == "random") {
-    cluster.set_lb_policy(envoy::api::v2::cluster::Cluster::RANDOM);
+    cluster.set_lb_policy(envoy::api::v2::Cluster::RANDOM);
   } else if (lb_type == "original_dst_lb") {
-    cluster.set_lb_policy(envoy::api::v2::cluster::Cluster::ORIGINAL_DST_LB);
+    cluster.set_lb_policy(envoy::api::v2::Cluster::ORIGINAL_DST_LB);
   } else {
     ASSERT(lb_type == "ring_hash");
-    cluster.set_lb_policy(envoy::api::v2::cluster::Cluster::RING_HASH);
+    cluster.set_lb_policy(envoy::api::v2::Cluster::RING_HASH);
   }
 
   if (json_cluster.hasObject("ring_hash_lb_config")) {
@@ -190,19 +190,19 @@ void CdsJson::translateCluster(const Json::Object& json_cluster,
   JSON_UTIL_SET_DURATION(json_cluster, cluster, dns_refresh_rate);
   const std::string dns_lookup_family = json_cluster.getString("dns_lookup_family", "v4_only");
   if (dns_lookup_family == "auto") {
-    cluster.set_dns_lookup_family(envoy::api::v2::cluster::Cluster::AUTO);
+    cluster.set_dns_lookup_family(envoy::api::v2::Cluster::AUTO);
   } else if (dns_lookup_family == "v6_only") {
-    cluster.set_dns_lookup_family(envoy::api::v2::cluster::Cluster::V6_ONLY);
+    cluster.set_dns_lookup_family(envoy::api::v2::Cluster::V6_ONLY);
   } else {
     ASSERT(dns_lookup_family == "v4_only");
-    cluster.set_dns_lookup_family(envoy::api::v2::cluster::Cluster::V4_ONLY);
+    cluster.set_dns_lookup_family(envoy::api::v2::Cluster::V4_ONLY);
   }
   if (json_cluster.hasObject("dns_resolvers")) {
     const auto dns_resolvers = json_cluster.getStringArray("dns_resolvers");
     std::transform(dns_resolvers.cbegin(), dns_resolvers.cend(),
                    Protobuf::RepeatedPtrFieldBackInserter(cluster.mutable_dns_resolvers()),
                    [](const std::string& json_address) {
-                     envoy::api::v2::Address address;
+                     envoy::api::v2::core::Address address;
                      AddressJson::translateAddress(json_address, false, true, address);
                      return address;
                    });

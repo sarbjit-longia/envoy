@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <string>
 
+#include "common/common/fmt.h"
 #include "common/config/protocol_json.h"
 #include "common/http/exception.h"
 #include "common/http/header_map_impl.h"
@@ -11,7 +12,6 @@
 #include "test/test_common/printers.h"
 #include "test/test_common/utility.h"
 
-#include "fmt/format.h"
 #include "gtest/gtest.h"
 
 using testing::InvokeWithoutArgs;
@@ -87,7 +87,7 @@ TEST(HttpUtility, createSslRedirectPath) {
 namespace {
 
 Http2Settings parseHttp2SettingsFromJson(const std::string& json_string) {
-  envoy::api::v2::Http2ProtocolOptions http2_protocol_options;
+  envoy::api::v2::core::Http2ProtocolOptions http2_protocol_options;
   auto json_object_ptr = Json::Factory::loadFromString(json_string);
   Config::ProtocolJson::translateHttp2ProtocolOptions(
       *json_object_ptr->getObject("http2_settings", true), http2_protocol_options);

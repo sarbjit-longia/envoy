@@ -14,6 +14,7 @@
 #include "common/api/api_impl.h"
 #include "common/buffer/buffer_impl.h"
 #include "common/common/assert.h"
+#include "common/common/fmt.h"
 #include "common/event/dispatcher_impl.h"
 #include "common/event/libevent.h"
 #include "common/network/connection_impl.h"
@@ -25,10 +26,10 @@
 #include "test/test_common/environment.h"
 #include "test/test_common/network_utility.h"
 
-#include "fmt/format.h"
 #include "gtest/gtest.h"
 
 using testing::AnyNumber;
+using testing::AtLeast;
 using testing::Invoke;
 using testing::NiceMock;
 using testing::_;
@@ -63,6 +64,10 @@ void IntegrationStreamDecoder::waitForReset() {
     waiting_for_reset_ = true;
     dispatcher_.run(Event::Dispatcher::RunType::Block);
   }
+}
+
+void IntegrationStreamDecoder::decode100ContinueHeaders(Http::HeaderMapPtr&& headers) {
+  continue_headers_ = std::move(headers);
 }
 
 void IntegrationStreamDecoder::decodeHeaders(Http::HeaderMapPtr&& headers, bool end_stream) {
@@ -110,7 +115,8 @@ void IntegrationStreamDecoder::onResetStream(Http::StreamResetReason reason) {
 
 IntegrationTcpClient::IntegrationTcpClient(Event::Dispatcher& dispatcher,
                                            MockBufferFactory& factory, uint32_t port,
-                                           Network::Address::IpVersion version)
+                                           Network::Address::IpVersion version,
+                                           bool enable_half_close)
     : payload_reader_(new WaitForPayloadReader(dispatcher)),
       callbacks_(new ConnectionCallbacks(*this)) {
   EXPECT_CALL(factory, create_(_, _))
@@ -123,12 +129,13 @@ IntegrationTcpClient::IntegrationTcpClient(Event::Dispatcher& dispatcher,
   connection_ = dispatcher.createClientConnection(
       Network::Utility::resolveUrl(
           fmt::format("tcp://{}:{}", Network::Test::getLoopbackAddressUrlString(version), port)),
-      Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket());
+      Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket(), nullptr);
 
   ON_CALL(*client_write_buffer_, drain(_))
       .WillByDefault(testing::Invoke(client_write_buffer_, &MockWatermarkBuffer::baseDrain));
   EXPECT_CALL(*client_write_buffer_, drain(_)).Times(AnyNumber());
 
+  connection_->enableHalfClose(enable_half_close);
   connection_->addConnectionCallbacks(*callbacks_);
   connection_->addReadFilter(payload_reader_);
   connection_->connect();
@@ -150,17 +157,26 @@ void IntegrationTcpClient::waitForDisconnect() {
   EXPECT_TRUE(disconnected_);
 }
 
-void IntegrationTcpClient::write(const std::string& data) {
+void IntegrationTcpClient::waitForHalfClose() {
+  connection_->dispatcher().run(Event::Dispatcher::RunType::Block);
+  EXPECT_TRUE(payload_reader_->readLastByte());
+}
+
+void IntegrationTcpClient::readDisable(bool disabled) { connection_->readDisable(disabled); }
+
+void IntegrationTcpClient::write(const std::string& data, bool end_stream) {
   Buffer::OwnedImpl buffer(data);
   EXPECT_CALL(*client_write_buffer_, move(_));
-  EXPECT_CALL(*client_write_buffer_, write(_));
+  if (!data.empty()) {
+    EXPECT_CALL(*client_write_buffer_, write(_)).Times(AtLeast(1));
+  }
 
   int bytes_expected = client_write_buffer_->bytes_written() + data.size();
 
-  connection_->write(buffer);
-  while (client_write_buffer_->bytes_written() != bytes_expected) {
+  connection_->write(buffer, end_stream);
+  do {
     connection_->dispatcher().run(Event::Dispatcher::RunType::NonBlock);
-  }
+  } while (client_write_buffer_->bytes_written() != bytes_expected);
 }
 
 void IntegrationTcpClient::ConnectionCallbacks::onEvent(Network::ConnectionEvent event) {
@@ -192,10 +208,13 @@ BaseIntegrationTest::BaseIntegrationTest(Network::Address::IpVersion version,
 }
 
 Network::ClientConnectionPtr BaseIntegrationTest::makeClientConnection(uint32_t port) {
-  return dispatcher_->createClientConnection(
+  Network::ClientConnectionPtr connection(dispatcher_->createClientConnection(
       Network::Utility::resolveUrl(
           fmt::format("tcp://{}:{}", Network::Test::getLoopbackAddressUrlString(version_), port)),
-      Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket());
+      Network::Address::InstanceConstSharedPtr(), Network::Test::createRawBufferSocket(), nullptr));
+
+  connection->enableHalfClose(enable_half_close_);
+  return connection;
 }
 
 void BaseIntegrationTest::initialize() {
@@ -211,7 +230,8 @@ void BaseIntegrationTest::createUpstreams() {
   if (autonomous_upstream_) {
     fake_upstreams_.emplace_back(new AutonomousUpstream(0, upstream_protocol_, version_));
   } else {
-    fake_upstreams_.emplace_back(new FakeUpstream(0, upstream_protocol_, version_));
+    fake_upstreams_.emplace_back(
+        new FakeUpstream(0, upstream_protocol_, version_, enable_half_close_));
   }
 }
 
@@ -229,7 +249,13 @@ void BaseIntegrationTest::createEnvoy() {
 
   const std::string bootstrap_path = TestEnvironment::writeStringToFileForTest(
       "bootstrap.json", MessageUtil::getJsonStringFromMessage(config_helper_.bootstrap()));
-  createGeneratedApiTestServer(bootstrap_path, named_ports_);
+
+  std::vector<std::string> named_ports;
+  const auto& static_resources = config_helper_.bootstrap().static_resources();
+  for (int i = 0; i < static_resources.listeners_size(); ++i) {
+    named_ports.push_back(static_resources.listeners(i).name());
+  }
+  createGeneratedApiTestServer(bootstrap_path, named_ports);
 }
 
 void BaseIntegrationTest::setUpstreamProtocol(FakeHttpConnection::Type protocol) {
@@ -247,8 +273,8 @@ void BaseIntegrationTest::setUpstreamProtocol(FakeHttpConnection::Type protocol)
 }
 
 IntegrationTcpClientPtr BaseIntegrationTest::makeTcpConnection(uint32_t port) {
-  return IntegrationTcpClientPtr{
-      new IntegrationTcpClient(*dispatcher_, *mock_buffer_factory_, port, version_)};
+  return IntegrationTcpClientPtr{new IntegrationTcpClient(*dispatcher_, *mock_buffer_factory_, port,
+                                                          version_, enable_half_close_)};
 }
 
 void BaseIntegrationTest::registerPort(const std::string& key, uint32_t port) {
@@ -309,13 +335,17 @@ void BaseIntegrationTest::createTestServer(const std::string& json_path,
   registerTestServerPorts(port_names);
 }
 
-void BaseIntegrationTest::sendRawHttpAndWaitForResponse(const char* raw_http,
-                                                        std::string* response) {
+void BaseIntegrationTest::sendRawHttpAndWaitForResponse(int port, const char* raw_http,
+                                                        std::string* response,
+                                                        bool disconnect_after_headers_complete) {
   Buffer::OwnedImpl buffer(raw_http);
   RawConnectionDriver connection(
-      lookupPort("http"), buffer,
-      [&](Network::ClientConnection&, const Buffer::Instance& data) -> void {
+      port, buffer,
+      [&](Network::ClientConnection& client, const Buffer::Instance& data) -> void {
         response->append(TestUtility::bufferToString(data));
+        if (disconnect_after_headers_complete && response->find("\r\n\r\n") != std::string::npos) {
+          client.close(Network::ConnectionCloseType::NoFlush);
+        }
       },
       version_);
 

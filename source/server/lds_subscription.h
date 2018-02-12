@@ -1,8 +1,8 @@
 #pragma once
 
+#include "envoy/api/v2/lds.pb.h"
 #include "envoy/api/v2/listener/listener.pb.h"
 #include "envoy/config/subscription.h"
-#include "envoy/service/discovery/v2/lds.pb.h"
 
 #include "common/common/assert.h"
 #include "common/common/logger.h"
@@ -17,18 +17,18 @@ namespace Server {
  * Service.
  */
 class LdsSubscription : public Http::RestApiFetcher,
-                        public Config::Subscription<envoy::api::v2::listener::Listener>,
+                        public Config::Subscription<envoy::api::v2::Listener>,
                         Logger::Loggable<Logger::Id::upstream> {
 public:
-  LdsSubscription(Config::SubscriptionStats stats, const envoy::api::v2::ConfigSource& lds_config,
+  LdsSubscription(Config::SubscriptionStats stats,
+                  const envoy::api::v2::core::ConfigSource& lds_config,
                   Upstream::ClusterManager& cm, Event::Dispatcher& dispatcher,
                   Runtime::RandomGenerator& random, const LocalInfo::LocalInfo& local_info);
 
 private:
   // Config::Subscription
-  void
-  start(const std::vector<std::string>& resources,
-        Config::SubscriptionCallbacks<envoy::api::v2::listener::Listener>& callbacks) override {
+  void start(const std::vector<std::string>& resources,
+             Config::SubscriptionCallbacks<envoy::api::v2::Listener>& callbacks) override {
     // LDS subscribes to all clusters.
     ASSERT(resources.empty());
     UNREFERENCED_PARAMETER(resources);
@@ -53,7 +53,7 @@ private:
 
   std::string version_info_;
   const LocalInfo::LocalInfo& local_info_;
-  Config::SubscriptionCallbacks<envoy::api::v2::listener::Listener>* callbacks_ = nullptr;
+  Config::SubscriptionCallbacks<envoy::api::v2::Listener>* callbacks_ = nullptr;
   Config::SubscriptionStats stats_;
 };
 

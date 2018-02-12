@@ -25,11 +25,11 @@ bool ConfigUtility::QueryParameterMatcher::matches(
 }
 
 Upstream::ResourcePriority
-ConfigUtility::parsePriority(const envoy::api::v2::RoutingPriority& priority) {
+ConfigUtility::parsePriority(const envoy::api::v2::core::RoutingPriority& priority) {
   switch (priority) {
-  case envoy::api::v2::RoutingPriority::DEFAULT:
+  case envoy::api::v2::core::RoutingPriority::DEFAULT:
     return Upstream::ResourcePriority::Default;
-  case envoy::api::v2::RoutingPriority::HIGH:
+  case envoy::api::v2::core::RoutingPriority::HIGH:
     return Upstream::ResourcePriority::High;
   default:
     NOT_IMPLEMENTED;
@@ -101,13 +101,13 @@ ConfigUtility::parseDirectResponseCode(const envoy::api::v2::route::Route& route
 }
 
 std::string ConfigUtility::parseDirectResponseBody(const envoy::api::v2::route::Route& route) {
+  static const ssize_t MaxBodySize = 4096;
   if (!route.has_direct_response() || !route.direct_response().has_body()) {
     return EMPTY_STRING;
   }
   const auto& body = route.direct_response().body();
   const std::string filename = body.filename();
   if (!filename.empty()) {
-    static const ssize_t MaxFileSize = 4096;
     if (!Filesystem::fileExists(filename)) {
       throw EnvoyException(fmt::format("response body file {} does not exist", filename));
     }
@@ -115,17 +115,19 @@ std::string ConfigUtility::parseDirectResponseBody(const envoy::api::v2::route::
     if (size < 0) {
       throw EnvoyException(fmt::format("cannot determine size of response body file {}", filename));
     }
-    if (size > MaxFileSize) {
+    if (size > MaxBodySize) {
       throw EnvoyException(fmt::format("response body file {} size is {} bytes; maximum is {}",
-                                       filename, MaxFileSize));
+                                       filename, size, MaxBodySize));
     }
     return Filesystem::fileReadToEnd(filename);
   }
-  const std::string inline_bytes = body.inline_bytes();
-  if (!inline_bytes.empty()) {
-    return inline_bytes;
+  const std::string inline_body(body.inline_bytes().empty() ? body.inline_string()
+                                                            : body.inline_bytes());
+  if (inline_body.length() > MaxBodySize) {
+    throw EnvoyException(fmt::format("response body size is {} bytes; maximum is {}",
+                                     inline_body.length(), MaxBodySize));
   }
-  return body.inline_string();
+  return inline_body;
 }
 
 Http::Code ConfigUtility::parseClusterNotFoundResponseCode(

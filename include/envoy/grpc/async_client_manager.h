@@ -1,6 +1,6 @@
 #pragma once
 
-#include "envoy/api/v2/grpc_service.pb.h"
+#include "envoy/api/v2/core/grpc_service.pb.h"
 #include "envoy/grpc/async_client.h"
 #include "envoy/stats/stats.h"
 
@@ -23,7 +23,8 @@ public:
 typedef std::unique_ptr<AsyncClientFactory> AsyncClientFactoryPtr;
 
 // Singleton gRPC client manager. Grpc::AsyncClientManager can be used to create per-service
-// Grpc::AsyncClientFactory instances.
+// Grpc::AsyncClientFactory instances. All manufactured Grpc::AsyncClients must
+// be destroyed before the AsyncClientManager can be safely destructed.
 class AsyncClientManager {
 public:
   virtual ~AsyncClientManager() {}
@@ -31,13 +32,14 @@ public:
   /**
    * Create a Grpc::AsyncClients factory for a service. Validation of the service is performed and
    * will raise an exception on failure.
-   * @param grpc_service envoy::api::v2::GrpcService configuration.
+   * @param grpc_service envoy::api::v2::core::GrpcService configuration.
    * @param scope stats scope.
    * @return AsyncClientFactoryPtr factory for grpc_service.
    * @throws EnvoyException when grpc_service validation fails.
    */
   virtual AsyncClientFactoryPtr
-  factoryForGrpcService(const envoy::api::v2::GrpcService& grpc_service, Stats::Scope& scope) PURE;
+  factoryForGrpcService(const envoy::api::v2::core::GrpcService& grpc_service,
+                        Stats::Scope& scope) PURE;
 };
 
 typedef std::unique_ptr<AsyncClientManager> AsyncClientManagerPtr;
